@@ -3,6 +3,9 @@
 S. Anders, 2018-06
 
 
+*To properly display the math formulae, creat an HTML file with:* `pandoc README.md -o README.html -s --mathjax
+`
+
 ### Project overview
 
 Here, I try out some ideas on distance emasures for single-cell RNA-Seq data on the Dropseq data from the Tabula muris project.
@@ -20,12 +23,13 @@ Here, I try out some ideas on distance emasures for single-cell RNA-Seq data on 
 
 - `endo_neighbours.ipynb` -- A notebook trying out ways to use this similarity matrix to call cell types.
 
+- and various outdated files that I should delete
 
 ### The similarity score
 
 For now, just a brief summary
 
-I write $K_{ij}$ for the UMI count for gene $i$ in cell $j$.
+- I write $K_{ij}$ for the UMI count for gene $i$ in cell $j$.
 
 - First, I transform all count values to their square roots. (This is the variance-stabilizing transformation for Poisson-distributed data; sometimes called the Anscombe transformation.)
 
