@@ -3,7 +3,8 @@
 S. Anders, 2018-06
 
 
-*To properly display the math formulae, creat an HTML file with:* `pandoc README.md -o README.html -s --mathjax
+*To properly display the math formulae, create an HTML file with:* 
+`pandoc README.md -o README.html -s --mathjax
 `
 
 ### Project overview
@@ -19,7 +20,7 @@ Here, I try out some ideas on distance emasures for single-cell RNA-Seq data on 
 
 - `Tabula_muris_10x.h5ad` -- The Scanpy Anndata file with the Tabula muris Dropseq data. This file can be generated with the above script, or downloaded [here](http://www.zmbh.uni-heidelberg.de/Anders/div/Tabula_muris_10x.h5ad)
 
-- `similarity_by_blocks.ipynb` -- A notebook to create a cell-to-cell similarity-score matrix and save it in a (huge) HDF5 file
+- `similarity_hdf5.ipynb` -- A notebook to create a cell-to-cell similarity-score matrix and save it in a (huge) HDF5 file (`sims.hdf5`, not saved to github; recreate it yourself)
 
 - `endo_neighbours.ipynb` -- A notebook trying out ways to use this similarity matrix to call cell types.
 
