@@ -1,3 +1,5 @@
+# Code to demonstrate maximum likelihood estimation for NB with offsets
+
 # Convenience functions to sample from lognormal and Poisson by specifiying distribution mean and variance
 
 library( rootSolve )
