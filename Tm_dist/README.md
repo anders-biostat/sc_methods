@@ -42,7 +42,7 @@ For now, just a brief summary
 
 - The similarity score $s_{jj'}$ has direct relation to two distance metrics, the Euclidean distance $d_{jj'}^\text{E}$ and the cosine distance (or "angular distance") $d_{jj'}^\text{A}$:
 
-- For the Euclidean distance, we have: $d_{jj'}^\text{E} = \sqrt{1 - s_{jj'}/2}$. (To see, just expand the squares in $(d^\text{E}_{jj'})^2 = \sum_i(y_{ij}-y_{ij'})^2$ and remember that $\sum_i y_{ij}^2=1$.) 
+- For the Euclidean distance, we have: $d_{jj'}^\text{E} = \sqrt{2} \cdot \sqrt{1 - s_{jj'}}$. (To see, just expand the squares in $(d^\text{E}_{jj'})^2 = \sum_i(y_{ij}-y_{ij'})^2$ and remember that $\sum_i y_{ij}^2=1$.) 
 
 - The cosine of the angle between the expression vectors of cells $j$ and $j'$ is equal to their scalar product (because they are unit vectors). We therefor define the angular distance as $d_{jj'}^\text{A}=\frac{2}{\pi} \arccos s_{jj'}$. Dividing the arc cosine by $\pi/2$ maps the possible angles (colinear to orthogonal) to the unit interval.
 
