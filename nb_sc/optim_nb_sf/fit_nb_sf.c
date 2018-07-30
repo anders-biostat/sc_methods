@@ -35,17 +35,22 @@ void gr_nll_nb_sf( int n, double *x, double *g, void *p ) {
    g[1] = -sum1;
 }
 
-SEXP fit_nb_sf( SEXP k, SEXP sf ) {
-   double x[] = { .5, 1 };  // initial values
+SEXP fit_nb_sf( SEXP k, SEXP sf, SEXP initialVals) {
+   double x[2];  // initial values
    int nbd[] = { 1, 1 };    // lower bounds only
-   double l[] = { 1e-15, 1e-15 };  // lower bounds
+   double l[] = { 1e-10, 1e-10 };  // lower bounds
    double fmin, g[2];
    int fail, fncount, grcount;
    char msg[200];
 
+   if(Rf_length(initialVals) != 2)
+	 Rf_error( "Two initial values required." );
+   x[0] = REAL(initialVals)[0];
+   x[1] = REAL(initialVals)[1];
+
+
    if( Rf_length(k) != Rf_length(sf) )
    	  Rf_error( "Lengths are different.");
-
    struct nb_dataT data;
    data.n = Rf_length(k);
    data.k = REAL(k);
@@ -71,10 +76,9 @@ SEXP fit_nb_sf( SEXP k, SEXP sf ) {
       msg, /* char *msg */
       0, /* int trace */
       1 /* int nREPORT */ );
-
-   if( fail )
-      Rf_error( "L-BFGS-B optimization failed.\n");
-
+   if( fail ) 
+      Rf_error( msg );
+     
    SEXP res = Rf_allocVector( REALSXP, 2 );
    REAL(res)[0] = x[0];
    REAL(res)[1] = x[1];
@@ -82,7 +86,7 @@ SEXP fit_nb_sf( SEXP k, SEXP sf ) {
 }
 
 R_CallMethodDef callMethods[] = {
-   { "fit_nb_sf", (DL_FUNC) &fit_nb_sf, 2 },
+   { "fit_nb_sf", (DL_FUNC) &fit_nb_sf, 3 },
    { NULL, NULL, 0 }
 };
 
