@@ -4,6 +4,7 @@
 #include <Rmath.h>
 #include <R_ext/Applic.h>
 
+
 struct nb_dataT {
    int n;
    double *k;
@@ -18,7 +19,6 @@ double nll_nb_sf( int n, double *x, void *p ) {
      sum += lgammafn( data->k[i] + 1. / x[1] ) - lgammafn( 1. / x[1] ) - lgammafn( data->k[i] + 1. ) - 
         ( data->k[i] + 1. / x[1]) * log( 1 + data->sf[i] * x[1] * x[0] ) + data->k[i] * log( data->sf[i] * x[1] * x[0] );
    }
-   printf( "%f,%f -> %f\n", x[0], x[1], sum );
    return( -sum );
 }
 
@@ -44,7 +44,7 @@ SEXP fit_nb_sf( SEXP k, SEXP sf ) {
    char msg[200];
 
    if( Rf_length(k) != Rf_length(sf) )
-   	  Rf_error( " Lengths are different.");
+   	  Rf_error( "Lengths are different.");
 
    struct nb_dataT data;
    data.n = Rf_length(k);
@@ -73,10 +73,7 @@ SEXP fit_nb_sf( SEXP k, SEXP sf ) {
       1 /* int nREPORT */ );
 
    if( fail )
-      Rprintf( "failed!\n");
-
-   Rprintf( "Optimum at %f, %f\n", x[0], x[1] );
-   Rprintf( "function value %f\n", fmin );
+      Rf_error( "L-BFGS-B optimization failed.\n");
 
    SEXP res = Rf_allocVector( REALSXP, 2 );
    REAL(res)[0] = x[0];
