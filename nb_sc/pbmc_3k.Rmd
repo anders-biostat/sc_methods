@@ -3,18 +3,40 @@ title: "Negative Binomial Naive Bayes 10X's 3k-PBMC dataset"
 output: html_notebook
 ---
 
+# Script setup
 
-
-Load data from SDS:
+## Load data from SDS:
 ```{r}
 # file lie on the SDS:
 sds10x <- file.path("~","sds","sd17l002","p","scRNAseq_datasets",
                     "10xGenomics_pbmc3k", "filtered_gene_bc_matrices", "hg19") 
 
-rawC <- Read10X(sds10x)
+rawC <- Seurat::Read10X(sds10x)
 ```
 
+## Function: fitNB (R)
+```{r}
+fitNB <- function(k, sf, initialVals = c(mean(k), 1)) {   
+    o = optim( 
+      initialVals,  # mu, alpha
+      function(x) {
+        -sum( lgamma( k + 1/x[2] ) - lgamma( 1/x[2] ) - lgamma( k+1 ) - ( k + 1/x[2] ) * log( 1 + sf * x[2] * x[1] ) + k * log( sf * x[2] * x[1] ) )
+        },
+      
+      function(x) c(
+        -sum( ( k - sf * x[1] ) / ( x[1] + sf * x[2] * x[1]^2 ) ),
+        -sum( ( x[2] * ( k - sf * x[1] ) / ( 1 + sf * x[2] * x[1] ) + log( 1 + sf * x[2] * x[1] ) - digamma( k + 1/x[2] ) + digamma( 1/x[2] ) ) / x[2]^2 ) ),
+      lower = c( 1e-10, 1e-10 ),
+      method = "L-BFGS-B" )
+    c( mean = o$par[1], disp = o$par[2] ) }
 
+
+library(purrr) # for possibly
+safe_fitNB <- possibly(fitNB, otherwise = c(mean=NA, disp=NA))
+
+```
+
+## Function: fit_nb_sf (C)
 Load C-functions
 ```{r}
 dyn.load( "/home/felix/sc_methods/nb_sc/optim_nb_sf/fit_nb_sf.so")
@@ -47,79 +69,82 @@ points(0:35, dnbinom(0:35, size = 1/1.192957, mu = 1.082246 ), col="red", pch=16
 ```
 
 
-# R function fitNB
-This function is the one we've now implemented in C and want to know whether
-we are faster.
+# Performance C and R
+We have implemented the fitNB (R) also now in C (fit_nb_sf) and want to know
+whether it's faster.
 
-## Function: fitNB
+
 ```{r}
-
-# to do: change c(4, .3) in optim-function to `start`, then test if it worked!
-fitNB <- function(k, sf) {  # , start = c(4, .3)
-  
-    o = optim( 
-      c( 4, .3 ),  # mu, alpha
-      function(x) 
-        -sum( lgamma( k + 1/x[2] ) - lgamma( 1/x[2] ) - lgamma( k+1 ) - ( k + 1/x[2] ) * log( 1 + sf * x[2] * x[1] ) + k * log( sf * x[2] * x[1] ) ),
-      function(x) c(
-        -sum( ( k - sf * x[1] ) / ( x[1] + sf * x[2] * x[1]^2 ) ),
-        -sum( ( x[2] * ( k - sf * x[1] ) / ( 1 + sf * x[2] * x[1] ) + log( 1 + sf * x[2] * x[1] ) - digamma( k + 1/x[2] ) + digamma( 1/x[2] ) ) / x[2]^2 ) ),
-      lower = c( 1e-10, 1e-10 ),
-      method = "L-BFGS-B" )
-    c( mean = o$par[1], disp = o$par[2] ) }
-
-
-library(purrr) # for possibly
-safe_fitNB <- possibly(fitNB, otherwise = c(mean=NA, disp=NA))
-
-```
-
-# NB fit for all genes using C
-
-```{r, eval = F}
-R.utils::setOption("mc.cores", 8)
 sf <- Matrix::colSums(rawC) / mean(Matrix::colSums(rawC))
-library(pbmcapply)
+library(microbenchmark)
 ```
 
 ```{r nbfit_C}
-
-  date()
-  dispTable.all <- pbmclapply(rownames(rawC), function(g) {
-    print(g)
+nbC <- function(geneVector) {
+    l <- lapply(geneVector, function(g) {
     geneFit =  .Call("fit_nb_sf", rawC[g, ], sf, c(mean(rawC[g, ] / sf), 1))
     data.frame( gene = g, 
                 mean = geneFit[1],
                 disp= geneFit[2],
-                stringsAsFactors = F
-            )
-      }   
-    )
-  date()
+                stringsAsFactors = F,
+                row.names = NULL
+            ) })
+  print("nbC is done.")
+  # return(l)
+}
+
+
+nbR <- function(geneVector) {
+    l <- lapply(geneVector, function(g) {
+    geneFit =  fitNB(rawC[g, ], sf, c(mean(rawC[g,]), 1))
+    data.frame( gene = g, 
+                mean = geneFit[1],
+                disp= geneFit[2],
+                stringsAsFactors = F,
+                row.names = NULL
+            ) })
+  print("nbR is done.")
+  return(l)
+}
   
-  dispTable.all <-  do.call(dplyr::bind_rows, dispTable.all)
   
 ```
 
+
+## Performance highly expressed genes
+```{r}
+# here are genes with reasonably high means so the fit will succeed:
+gs <- c("JUN", "S100A8", "FCER1G", "CD3E", "MS4A1")
+microbenchmark(
+  nbC(gs), 
+  nbR(gs)
+)
+```
+We can see that performance virtually is the same.
+
+
+
+
+
+# End of Script
+
+## [deprecated]: benchmark using pbmclapply
+
+C:
 pbmclapply estimates more than 1 h if lower bounds are 1e-15 and about
 30 min if lower bounds are 1e-10. Both these numbers are for
 factr = 1e15.
-
-# NB fit for all genes using R
-
-```{r}
-  date()
-  dispTable.all.R <- pbmclapply(rownames(rawC), function(g) {
-    geneFit =  safe_fitNB(rawC[g, ], sf)
-     data.frame( gene = g, 
-                 mean = geneFit["mean"], disp= geneFit["disp"],
-                  stringsAsFactors = F
-            )
-      })
-
-  date()
-```
-
+R: 
 Surprisingly, pbmclapply estimates only 15 min, so half the time for fitNB in
 R than for fit_nb_sf in C. Haven't run it completely, so not sure how accurate
 pbmclapply's estimates are.
+
+
+
+
+## to do: multithreading.
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+```
+
