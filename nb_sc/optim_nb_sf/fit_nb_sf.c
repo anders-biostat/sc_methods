@@ -68,8 +68,8 @@ SEXP fit_nb_sf( SEXP k, SEXP sf, SEXP initialVals) {
       &gr_nll_nb_sf, /* optimgr gr */
       &fail, /* int *fail */
       &data, /* void *ex */
-      1e10, /* double factr */
-      1e-10, /* double pgtol */
+      1e7, /* double factr */
+      0, /* double pgtol */
       &fncount, /* int *fncount */
       &grcount, /* int *grcount */
       100, /* int maxit */ 
