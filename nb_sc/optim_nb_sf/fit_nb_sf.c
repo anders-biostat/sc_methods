@@ -16,7 +16,7 @@ double nll_nb_sf( int n, double *x, void *p ) {
    struct nb_dataT * data = (struct nb_dataT *) p;
    double sum = 0;
    for(int i = 0; i < data->n; ++i) {
-     sum += lgammafn( data->k[i] + 1. / x[1] ) - lgammafn( 1. / x[1] ) - lgammafn( data->k[i] + 1. ) - 
+     sum += lgamma( data->k[i] + 1. / x[1] ) - lgamma( 1. / x[1] ) - lgamma( data->k[i] + 1. ) - 
         ( data->k[i] + 1. / x[1]) * log( 1 + data->sf[i] * x[1] * x[0] ) + data->k[i] * log( data->sf[i] * x[1] * x[0] );
    }
    return( -sum );
