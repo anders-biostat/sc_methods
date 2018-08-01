@@ -122,6 +122,9 @@ microbenchmark(
 ```
 We can see that performance virtually is the same.
 
+```{r}
+
+```
 
 
 
