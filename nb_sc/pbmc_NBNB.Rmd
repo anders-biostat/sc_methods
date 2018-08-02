@@ -30,6 +30,8 @@ rawC <- Seurat::Read10X(sds10x)
 sf <- Matrix::colSums(rawC) / mean(Matrix::colSums(rawC))
 ```
 
+# Negative Binomial Naive Bayesian Classifier:w
+
 ## Function: fitNB (R)
 ```{r}
 disp <- function(k) (var(k) - mean(k)) / mean(k) / mean(k) # var = mu + disp * mu^2
@@ -57,19 +59,181 @@ safe_fitNB <- possibly(fitNB, otherwise = c(mean=NA, disp=NA, SE_m = NA, SE_d = 
 ```
 
 
+## Function: trainNB
+```{r}
+trainNB <- function(countmatrix, isPositive, isNegative) {
+  ## FYI: faster for dense matrices
+  pbmclapply(rownames(countmatrix), function(g) {
+    if(sum(countmatrix[g, ]) == 0) return(
+      data.frame(gene = NA, meanPos=NA, dispPos=NA, meanNeg=NA, dispNeg=NA))
+    
+    posCounts <- countmatrix[g, isPositive]
+    negCounts <- countmatrix[g, isNegative]
+    # if one group has 100% zeros this overemphasizes the genes, so remedy:
+    if(sum(posCounts) == 0) posCounts <- c(1, rep(0, sum(isPositive)-1))
+    if(sum(negCounts) == 0) negCounts <- c(1, rep(0, sum(isNegative)-1))
+    
+    pos =  safe_fitNB(posCounts, sf[isPositive])
+    neg =  safe_fitNB(negCounts, sf[isNegative])
+    data.frame(  gene = g, 
+                 meanPos = pos["mean"], dispPos = pos["disp"],
+                 meanNeg = neg["mean"], dispNeg = neg["disp"],
+                 stringsAsFactors = F, row.names = NULL
+               )
+  })
+}
+
+```
+
+## Function: NBNB
+```{r}
+NBNB <- function(countmatrix, dispersionTable, sf = NULL) {
+  if(is.null(sf)) {
+    sf <- colSums(countmatrix)
+    names(sf) <- colnames(countmatrix)
+  }
+ sapply(colnames(countmatrix), function(cell) {
+   
+    sum(dnbinom(x  = countmatrix[dispersionTable$gene, cell],
+                mu = dispersionTable$meanPos * sf[cell],
+                size = 1 / dispersionTable$dispPos, log=T)) +
+     -
+    sum(dnbinom(x  = countmatrix[dispersionTable$gene, cell],
+                mu = dispersionTable$meanNeg * sf[cell],
+                size = 1 / dispersionTable$dispNeg, log=T))
+ })
+ 
+  
+}
+```
+
 
 
 # Find super-poissonian genes
 
-```{r}
-disptable <- pbmclapply(rownames(rawC)[1:10], function(g) {
+```{r, eval=F}
+disptable <- pbmclapply(rownames(rawC), function(g) {
    NBparams <- safe_fitNB(rawC[g, ], sf)
    data.frame(gene = g, t(NBparams))
  })
+# runs 18 min
 
 # saveRDS(do.call(rbind, disptable), "/home/felix/sc_methods/nb_sc/Robj_superpoissonGenes.rds")
 ```
 
+```{r}
+disptable <- readRDS( "/home/felix/sc_methods/nb_sc/Robj_superpoissonGenes.rds")
+# even 1 NA is annoying and we kick it out:
+noNA <- colSums(apply(disptable, 1, is.na)) == 0
+# I pick superpoissonian genes as having dispersion clearly above 0:
+significant_dispersion <- (disptable$disp / disptable$SE_d) > 2
+
+```
+
+```{r}
+
+# d <- disptable[noNA & significant_dispersion,]
+
+plot(disptable$mean,
+     disptable$disp, log = "xy", pch=16, cex=.4); points(
+     disptable[noNA & significant_dispersion,"mean"],
+     disptable[noNA & significant_dispersion,"disp"], col="red", pch=16, cex=.4)
+
+```
+
+
+# Classify PBMCs
+
+```{r}
+library(parallelDist)
+ds <- parallelDist::parDist(t(E[noNA & significant_dispersion, ]))
+# indices of each cell's 20 nearest neighbors:
+NN <- t(apply(as.matrix(ds), 1, function(row) head(order(row), n = 20)))
+```
+
+```{r}
+is_cd3  <- E["CD3E", ] > .02
+not_cd3 <- apply(NN, 1, function(nns) { sum(E["CD3E", nns]) == 0  })
+dt_cd3  <- do.call(rbind,
+                   trainNB((as.matrix(rawC)[noNA & significant_dispersion, ]), is_cd3, not_cd3))
+ s_cd3  <- NBNB(as.matrix(rawC)[noNA & significant_dispersion, ], dt_cd3)
+```
+
+
+
+
+
+# Analysis on 46 Best HVGs
+## 46 HVGs
+
+```{r}
+# manually select genes using plotly:
+# library(plotly)
+#    p <- plot_ly(d, x=~mean, y=~disp, text=~gene)
+#    layout(p, xaxis = list(type = "log"),
+#           yaxis = list(type = "log"))
+
+# select good genes by hand:
+gg <- c(
+  "MALAT1", "FTL", "FTH1", "LYZ", "CD74", "S100A4", "LTB", "HLA-DRA", "S100A9",
+  "CST3", "TYROBP", "NKG7", "S100A8", "CCL5", "LGALS1", "HLA-DPB1", "SAT1",
+  "COTL1", "IL32", "CTSS", "AIF1", "LST1", "FCER1G", "GNLY", "FCN1", "TYMP",
+  "HLA-DRB5", "CTSW", "LGALS2", "GZMB", "CD79A", "CST7", "CD79B", "IFITM3",
+  "FCGR3A", "PRF1", "CCL3", "GZMK", "TCL1A", "GZMH", "PPBP", "IGLL5", "PF4",
+  "IL8", "SPON2", "LINC00926"
+)
+plot(disptable$mean, disptable$disp, log = "xy", pch=16, cex=.4); points(disptable[disptable$gene %in% gg,"mean"], disptable[disptable$gene %in% gg,"disp"], col="red", pch=16, cex=.4)
+```
+
+## PCA and tsne
+
+```{r}
+library(umap)
+E <- apply(rawC[, ], 2, function(umi) {
+  ans <- sqrt(umi+3/8) - sqrt(3/8)
+  ans/sqrt(sum(ans^2)) })
+pca <- prcomp(t(E[gg,]))
+umap <- umap(pca$x[,1:6])
+
+plot(umap$layout, pch=16, cex=.4)
+plot(pca$x[,1], pca$x[,2])
+
+u <- function(x) x/max(x)
+
+plot(umap$layout, pch=16, col = rgb(u(E["ITGAX",])^.5, u(E["CD8A",])^.1,u(E["CD3E",])^.2), cex=.6)
+```
+
+## Find out what 14 outlier cells are:
+Simon thinks it might be nice to quickly build the 
+Classifier on PPBP, PF4, GNG11 and SDPR and see if the ~ 14 outliers become more.
+```{r}
+library(genefilter)
+# 14 outlier cells can be selected by UMAP coordinates:
+o14 <- umap$layout[,1] > 5 & umap$layout[,2] > 2
+
+t14 <- rowttests(E, as.factor(o14))
+t14[order(t14$p.value, t14$dm),]
+
+
+
+
+
+
+
+
+
+
+
+
+is_ppbp <- E["PPBP", ] > .04
+not_ppbp <- apply(NN, 1, function(nns) { sum(E["PPBP", nns]) == 0  })
+dt_ppbp  <- trainNB((as.matrix(rawC)[noNA & significant_dispersion, ]), is_ppbp, not_ppbp)
+ s_ppbp  <- NBNB(as.matrix(rawC)[noNA & significant_dispersion, ], dt_ppbp)
+dt_ppbp <- do.call(rbind, dt_ppbp)
+
+
+
+```
 
 
 
@@ -95,6 +259,31 @@ g <- "TIE1"
 
 ```{r}
 k  = rawC["CD3E", ]
-mu = 1.08175486
-plot(seq(1,1.4, by=0.04), sapply(seq(1,1.4, by=0.04), function(d) sum( lgamma( k + 1/d ) - lgamma( 1/d ) - lgamma( k+1 ) - ( k + 1/d ) * log( 1 + sf * d * mu ) + k * log( sf * d * mu ) )), ylab = "likelihood", xlab = "Dispersion")
+fit <- fitNB(k, sf)
+x <- seq(fit["disp"]*.8, fit["disp"]*1.2, by=fit["disp"]/100)
+plot(x, sapply(x, function(d) {
+  sum( lgamma( k + 1/d ) - lgamma( 1/d ) - lgamma( k+1 ) -( k + 1/d ) *
+         log( 1 + sf * d * fit["mu"]) + k * log( sf * d * fit["mu"] ) )}), 
+  ylab = "likelihood", xlab = "Dispersion");
+segments(fit["disp"] - fit["SE_d"], -3763, fit["disp"] + fit["SE_d"], -3763)
 ```
+# Time delay due to sparse-dense conversion
+It's interesting to note that accessing a single line from a sparse matrix
+takes longer than for a dense one. Although this might simply be because for
+the dense one, the vector is not yet copied.
+
+
+```{r}
+mat_sparse <- rawC
+mat_dense  <- as.matrix(rawC)
+sparse <- function() {lapply(rownames(mat_sparse), function(g) {mat_sparse[g, ]; return()})}
+dense  <- function() {lapply(rownames(mat_dense),  function(g) {mat_dense[g, ]; return()})}
+
+dense1 <- function() {rawC_normal["CD3E", ]}
+sparse1<- function() {rawC["CD3E", ]}
+
+microbenchmark::microbenchmark(
+sparse1(), dense1(), times=20
+)
+```
+
