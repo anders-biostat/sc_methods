@@ -85,6 +85,9 @@ trainNB <- function(countmatrix, isPositive, isNegative) {
 
 ```
 
+
+
+
 ## Function: NBNB
 ```{r}
 NBNB <- function(countmatrix, dispersionTable, sf = NULL) {
@@ -146,7 +149,14 @@ plot(disptable$mean,
 
 ```{r}
 library(parallelDist)
-ds <- parallelDist::parDist(t(E[noNA & significant_dispersion, ]))
+
+# compute transformed / normalized expression:
+ds <- parallelDist::parDist(t(
+                apply(rawC[, ], 2, function(umi) { # computes anscombe + offset
+                      ans <- sqrt(umi+3/8) - sqrt(3/8)
+                      ans <- ans/sqrt(sum(ans^2))
+                      return(ans)}
+                      )[noNA & significant_dispersion, ]))
 # indices of each cell's 20 nearest neighbors:
 NN <- t(apply(as.matrix(ds), 1, function(row) head(order(row), n = 20)))
 ```
@@ -189,8 +199,8 @@ plot(disptable$mean, disptable$disp, log = "xy", pch=16, cex=.4); points(disptab
 
 ```{r}
 library(umap)
-E <- apply(rawC[, ], 2, function(umi) {
-  ans <- sqrt(umi+3/8) - sqrt(3/8)
+E <- apply(rawC[, ], 2, function(umi) { # Anscombe transformation with offset
+  ans <- sqrt(umi+3/8) - sqrt(3/8) # subtract offset=sqrt(3/8) so that a 0 stays a 0
   ans/sqrt(sum(ans^2)) })
 pca <- prcomp(t(E[gg,]))
 umap <- umap(pca$x[,1:6])
