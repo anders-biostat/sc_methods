@@ -1,0 +1,373 @@
+---
+title: "Unleash NBNB on CITEseq data"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+library(parallelDist)
+```
+
+
+## Load data from SDS
+```{r}
+citeseqDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/"
+
+
+rawC <- as.matrix(
+        read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_RawCounts_2018Aug08.csv"),
+                 header = T, row.names = 1))
+anno <- read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_CellAnnotation_2018Aug08.csv"),
+                 header = T, row.names = 1)
+
+```
+
+## Load NBNB classifier functions
+
+```{r}
+source("~/sc_methods/nb_sc/src/NBNB_functions.R")
+```
+
+
+# Downsampling and Dispersion tables
+
+
+
+```{r}
+
+downsample <- function(matrix, p=.8) {
+  m <-   matrix(rbinom(n    = nrow(matrix)*ncol(matrix),
+                 size = matrix,
+                 prob = p),
+                nrow = nrow(matrix))
+  rownames(m) <- rownames(matrix)
+  colnames(m) <- colnames(matrix)
+  return(m)
+}# cnt <- matrix(sample(c(rpois(12, lambda = 5), rpois(12, lambda = .3))), nrow = 6)
+
+
+
+
+
+
+
+rawC.8 <- downsample(rawC, p = .8)
+rawC.6 <- downsample(rawC, p = .6)
+rawC.4 <- downsample(rawC, p = .4)
+
+dt1.0   <- computeDT(rawC)
+dt.8 <- computeDT(rawC.8)
+dt.6 <- computeDT(rawC.6)
+dt.4 <- computeDT(rawC.4)
+
+
+  
+```
+
+
+## Choose super-poissonian genes
+
+```{r}
+
+plot(log10(dt1.0$mean), log10(dt1.0$disp/dt1.0$mean), pch=".")
+keep <- log10(dt1.0$disp / dt1.0$mean) > -1.78 * log10(dt1.0$mean)
+points(log10(dt1.0$mean[keep]), log10(dt1.0$disp[keep]/dt1.0$mean[keep]), col="red", pch=".")
+abline(0, -1.78, col="red")
+
+
+selectSPgenes <- function(dispersionTable, slope = -1.78) {
+keep <- log10(dispersionTable$disp / dispersionTable$mean) > slope * log10(dispersionTable$mean) 
+plot(log10(dispersionTable$mean), log10(dispersionTable$disp/dispersionTable$mean), pch=".")
+# points(log10(dispersionTable$mean[keep]), log10(dispersionTable$disp[keep]/dispersionTable$mean[keep]), col="red", pch=".")
+abline(0, slope, col="red")
+return(keep)
+}
+
+keep <- selectSPgenes(dt1.0, slope=-1.78)
+keep.8 <- selectSPgenes(dt.8, slope = -1.78)
+keep.6 <- selectSPgenes(dt.6, slope = -1.78)
+keep.4 <- selectSPgenes(dt.4, slope = -1.78)
+
+
+plot(log10(dt1.0$mean), log10(dt1.0$disp/dt1.0$mean), pch=20, cex=1, col = "#00000010", xlab = "log10(estimated mean)", ylab = "log10(dispersion / mean)", main = "Crude selection of Super-Poissonian genes"); abline(0, -1.78, col = "red")
+```
+
+
+# How to define Nearest Neighbors?
+
+I'm still not sure whether to sqrt/log-transform/nothing the sf-normalized data.
+
+```{r}
+NAfreeRows <- function(dataframe) colSums(apply(dataframe, 1, is.na)) == 0
+```
+
+## Cell-cell Distances and neighbors
+
+
+
+```{r}
+normC <-  t(t(rawC) / colSums(rawC))
+d <- parallelDist::parDist(t(normC[keep, ]), threads = getOption("mc.cores"))
+
+
+NN <- t(apply(as.matrix(d), 1, function(row) head(order(row), n = 20)))
+plot(log10(dt1.0$mean), log10(dt1.0$disp/dt1.0$mean), pch=".", main =
+       "Genes used for distance computation")
+points(log10(dt1.0$mean[keep]), log10(dt1.0$disp[keep]/dt1.0$mean[keep]), pch=".", col="red")
+```
+
+
+Squareroot or no?
+
+```{r}
+mv_none <- do.call(rbind, apply(normC[keep, ],1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+mv_sqrt <- do.call(rbind, apply(sqrt(normC[keep, ]),1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+
+mv_log <- do.call(rbind, apply(log10(normC[keep, ] + min(as.vector(normC)[as.vector(normC) > 0])),1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+
+plot(mv_log$mean, mv_log$var)
+plot(mv_sqrt$mean, mv_sqrt$var, log = "xy")
+plot(mv_none$mean, mv_none$var, log = "xy")
+
+```
+
+
+
+
+
+
+
+###  _ _ _ vVv _ _ _
+### Safepoint
+my session keeps crashing and I won't have it.
+```{r}
+save.image("~/savepoint/cbmc.RData")
+```
+
+```{r}
+load("~/savepoint/cbmc.RData")
+```
+
+
+
+###  _ _ _ n/\n _ _ _
+
+
+
+
+# TSNE on superpoissonian genes
+
+```{r}
+library(Rtsne)
+
+tsne <- Rtsne::Rtsne(t(normC[keep, ]))
+
+tsne_sqrt <- Rtsne::Rtsne(t(sqrt(normC[keep, ])))
+
+
+mydf <- data.frame(tsne_sqrt$Y, CD3E = normC["CD3E",], CD8 = normC["CD8B", ],
+                        CD4  = normC["CD4", ],
+                        CD14 = normC["CD14", ],CD16 = normC["FCGR3A", ])
+
+
+pm <- function(colby, label=FALSE, highcolor = "red") {
+p <-  ggplot(data.frame(tsne_sqrt$Y))+ geom_point(aes(X1,X2, col=colby, alpha=.6)) + scale_color_continuous(low = "grey", high= highcolor)+
+  coord_fixed()+ theme(legend.position="none")
+if(is.character(label)){p <- p+ ggtitle(label)}
+return(p) 
+}
+
+pm(normC["MS4A1",], label = "MS4A1 (CD20)", highcolor = "blue")
+```
+
+
+## Discuss with simon
+sqrt or no?
+
+
+
+
+
+
+
+
+
+
+# Classify on ground truth
+
+If CD4 and CD8 are not ideal markers on the mRNA level to divide T cell subsets apart,
+the question is whether we can find other ones, or whether mRNA is just more
+ambiguous than protein.
+
+```{r}
+
+subsel <-  anno$groundtruth_CD4T | anno$groundtruth_CD8T
+
+
+dt_Tsubsets <- trainNB(rawC, anno$groundtruth_CD4T, anno$groundtruth_CD8T)
+s_Tsubsets <- NBNB(countmatrix = rawC[, subsel],
+                   dispersionTable = dt_Tsubsets)
+
+
+plot(colSums(rawC[, subsel]), s_Tsubsets,
+     pch = 20, cex=.3, col = rgb(0 + anno$groundtruth_CD4T[subsel], 0+anno$groundtruth_CD8T[subsel], 0), 
+     main = "Trained on Groundtruth\npos = CD4 T, neg = CD8 T"
+     , ylim = c(-500, 500)
+)
+
+     
+```
+
+```{r findmRNAmarkers_plotly, eval=F}
+p <- plotly::plot_ly( dt_Tsubsets, x= ~meanPos, y= ~ meanNeg,
+                 text = ~ paste0(gene))
+layout(p, xaxis = list(type = "log"),
+                                      yaxis = list(type = "log"))
+
+```
+
+```{r}
+sepscore <- function(dispersiontable) {
+  g  = dispersiontable$gene
+  mp = dispersiontable$meanPos 
+  mn = dispersiontable$meanNeg
+  dp = dispersiontable$dispPos
+  dn = dispersiontable$dispNeg
+  
+  varp = mp + dp * mp * mp
+  varn = mn + dn * mn * mn
+  
+  sepscore <- (mp - mn) / (sqrt(varp) + sqrt(varn))
+  names(sepscore) <- g
+ return(sepscore) 
+}
+
+
+dt_Tsubsets$sepScore <- sepscore(dt_Tsubsets)
+
+head(dt_Tsubsets[order(dt_Tsubsets$sepScore), ], n = 15)
+head(dt_Tsubsets[order(dt_Tsubsets$sepScore, decreasing = T), ], n = 15)
+
+
+# compare histograms:
+cH <- function(g) {
+  g_expr <- rawC[g, ]
+  x_max <- max(g_expr) + 2
+  breaksx <- -.5 + 0:x_max
+  par(mfrow = c(2,1))
+  hist(g_expr[ anno$groundtruth_CD8T], main = paste0("CD8 cells  -  ", g), breaks=breaksx)
+  hist(g_expr[ anno$groundtruth_CD4T], main = paste0("CD4 cells  -  ", g), breaks=breaksx)
+  par(mfrow = c(1,1))
+}
+
+
+cH("GPR183")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Classify naively (no ground truth)
+
+Let's pretend we do not have the protein-marker 'ground truth'. Then we do *not*
+know which cells are really CD4 and CD8 T cells. A trained biologist would then
+default to selecting cells clearly expressing CD3, and then subdivide these
+into CD4 and CD8 expressing cells, and use those as a positive classifier.
+
+
+Let's trust our MLE-fit of NBinomials for the moment. Then I expect to have eliminated
+genes with low Signal-to-noise / only-Poisson-variance and thus would think we
+can trust the Euclidean distance computed on these genes locally.
+
+Thus we can use even lowly expressed markers such as CD3E to identify cells by
+looking not only at each cell, but also this cell's closest neighbors. Here I 
+test this on 20 NNs and am able to classify > 90 % of the cells as T or not T.
+
+
+```{r}
+cd3less_neighbors<- apply(NN, 1, function(n)  sum(rawC["CD3E", n] == 0) )
+cd4less_neighbors<- apply(NN, 1, function(n)  sum(rawC["CD4", n] == 0) )
+cd8less_neighbors<- apply(NN, 1, function(n)  sum(rawC["CD8B", n] == 0) )
+
+
+breaks20 <- -0.5+0:21
+hist(cd3less_neighbors, main = 'sum(rawC["CD3E", n] == 0) )', breaks=breaks20)
+
+```
+
+
+```{r}
+# guess Ts and not Ts
+not_T    <- cd3less_neighbors > 15
+ is_T    <- cd3less_neighbors < 9
+ 
+
+# citeseqDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/" 
+# cbmc <- readRDS(paste0(citeseqDIR, "Seurat_workflow/Robjects/cbmc_mRNA.rds")) 
+# tdf <- data.frame(cbmc@dr$tsne@cell.embeddings, seurat_rna_cluster = cbmc@ident, not_T, is_T)
+# cowplot::plot_grid(
+# ggplot(tdf) + geom_point(aes(tSNE_1, tSNE_2, col=seurat_rna_cluster)),
+# ggplot(tdf) + geom_point(aes(tSNE_1, tSNE_2, col=is_T, 
+#                          alpha=.8))+scale_color_manual(values=c("grey","darkred")),
+# ggplot(tdf) + geom_point(aes(tSNE_1, tSNE_2, col=not_T), alpha=.8)+
+#   scale_color_manual(values=c("grey","navyblue"))
+# )
+```
+
+Classify on these - can we improve the T cell selection?
+
+```{r}
+dt_Tcells <- trainNB(rawC[keep, ], is_T, not_T)
+
+ s_Tcells <- NBNB(rawC[keep, ], dt_Tcells)
+ 
+plot(colSums(rawC), s_Tcells, pch=20, cex=.1, 
+     ylim = c(-700, 500), xlim = c(0, 15000),
+     col = rgb(0 + is_T, 0 + not_T, 0), main = "NBNB Score (classified on CD3E neighborhood)" ); legend(
+x = 10000, y = 400, legend = c("is_T", "not_T"), pch=20, col = c("red", "green") )
+
+
+plot(colSums(rawC), s_Tcells, pch=20, cex=1, 
+     ylim = c(-700, 500), xlim = c(0, 15000),
+     col = rgb(0.4 + .6*anno$groundtruth_CD4T, 0.4 + .6*anno$groundtruth_CD8T , 0.4 + .6*anno$groundtruth_notTatall),
+     main="'Ground truth' from CITEseq'"); legend(x=10000, y=400, legend=c("CITEseq_CD4", "CITEseq_CD8", "CITE_notTatall","unknown"), pch=20, col=c("red","green","blue","black"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
