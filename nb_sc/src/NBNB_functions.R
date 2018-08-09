@@ -1,5 +1,12 @@
 # Negative Binomial Naive Bayesian Classifier
 
+
+## Load packages
+library(pbmcapply)
+
+
+
+
 ## Function: fitNB (R)
 disp <- function(k) (var(k) - mean(k)) / mean(k) / mean(k) # var = mu + disp * mu^2
 # remember to divide k by sf, and to prohibit negative values
@@ -26,9 +33,16 @@ safe_fitNB <- possibly(fitNB, otherwise = c(mean=NA, disp=NA, SE_m = NA, SE_d = 
 
 
 ## Function: trainNB
-trainNB <- function(countmatrix, isPositive, isNegative) {
-  ## FYI: faster for dense matrices
-  pbmclapply(rownames(countmatrix), function(g) {
+trainNB <- function(countmatrix, isPositive, isNegative, sf = NULL) {
+  ## FYI: faster for dense matrices and after excluding genes without a clear
+  ##      expression signal to which we could fit (low-expression/dispersion).
+  
+  if(is.null(sf)) {
+    sf <- colSums(countmatrix)
+    names(sf) <- colnames(countmatrix)
+  }
+  
+  dt <- pbmclapply(rownames(countmatrix), function(g) {
     if(sum(countmatrix[g, ]) == 0) return(
       data.frame(gene = NA, meanPos=NA, dispPos=NA, meanNeg=NA, dispNeg=NA))
     
@@ -46,7 +60,11 @@ trainNB <- function(countmatrix, isPositive, isNegative) {
                  stringsAsFactors = F, row.names = NULL
     )
   })
+  return(do.call(rbind, dt))
 }
+# Remember to remove NAs:
+#    noNA <- colSums(apply(disptable, 1, is.na)) == 0
+
 
 
 
@@ -71,6 +89,21 @@ NBNB <- function(countmatrix, dispersionTable, sf = NULL) {
   
   
 }
+
+
+
+
+#  compute dispersion tables. This function is a wrapper for pbmclapply.
+computeDT <- function(countmatrix) {
+  sf <- colSums(countmatrix) / mean(colSums(countmatrix))
+  dtList <- pbmclapply(rownames(countmatrix), function(g) {
+  NBparams <- safe_fitNB(countmatrix[g, ], sf)
+  data.frame(gene = g, t(NBparams))
+})
+  print("Converting list to matrix...")
+  return(do.call(rbind,dtList))
+}
+
 
 
 
