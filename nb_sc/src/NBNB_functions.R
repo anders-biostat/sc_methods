@@ -88,8 +88,16 @@ NBNB <- function(countmatrix, dispersionTable, sf = NULL) {
   })
   
   
-}
-
+} # to do:
+  #   - check dims of countmatrix and dispersiontable are the same -
+  #     When excluding NAs, it can easily happen they're not
+  #     (also genes should have same order). 
+  #   - sf has to have names. Not sure if this is elegent, consider changing
+  #     it but whatever you do this has to be documented!
+  #
+  #   - somehow make clear the size factors have to be the same as in trainNB.
+  #     While this is obvious, some idiot WILL manage to mess it up (e.g.
+  #     tired migrane felix on Friday, 10th August).
 
 
 
