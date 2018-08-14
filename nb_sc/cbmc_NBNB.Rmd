@@ -84,7 +84,7 @@ them.
 
 ## Choose super-poissonian genes
 
-```{r}
+```{r, superPoissonianGenes}
 
 plot(log10(dt1.0$mean),
      log10(dt1.0$disp/dt1.0$mean),
@@ -305,14 +305,14 @@ genes will be enough here (and faster!), as T cells are quite large a population
 and distinct from all others. 
 
 ```{r}
-dt_Tcells <- trainNB(rawC[keep, ], is_T, not_T)
+dt_Tcells <- trainNB(rawC[keep, ], is_T_1, not_T_1)
  s_isT_1 <- NBNB(rawC[keep, ], dt_Tcells)
  
 
  
 plot(colSums(rawC), s_isT_1, pch=20, cex=.1, 
      ylim = c(-700, 500), xlim = c(0, 15000),
-     col = rgb(0 + is_T, 0 + not_T, 0), main = "NBNB Score (classified on CD3E neighborhood)" ); legend(
+     col = rgb(0 + is_T_1, 0 + not_T_1, 0), main = "NBNB Score (classified on CD3E neighborhood)" ); legend(
 x = 10000, y = 400, legend = c("is_T", "not_T"), pch=20, col = c("red", "green") )
 
 
