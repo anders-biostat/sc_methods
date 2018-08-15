@@ -1,0 +1,141 @@
+---
+title: "Ridge / logistic / LASSO regression"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+
+# Load stuff from cbmc Script
+This is important, perhaps I've by now deleted the following R object, not sure:
+```{r}
+load("~/savepoint/cbmc.RData")
+```
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+library(parallelDist)
+library(devtools) # for session_info()
+library(glmnet)
+```
+
+
+
+
+# Anscombe normalization
+
+```{r}
+A_noOffset <- apply(rawC, 2, function(x) sqrt(x ) / sqrt(sum(x)))
+A          <- apply(rawC, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+```
+
+
+
+# T cells
+```{r}
+cd3less_neighbors<- apply(NN, 1, function(n)  sum(rawC["CD3E", n] == 0) )
+
+breaks20 <- -0.5+0:21
+hist(cd3less_neighbors, main = 'sum(rawC["CD3E", n] == 0) )', breaks=breaks20)
+
+```
+
+To be sure, let's select rather stringent cut-offs to define our T cell
+training data:
+```{r}
+# find Ts and not Ts (let's be conservative)
+not_T_1    <- cd3less_neighbors > 18
+ is_T_1    <- cd3less_neighbors < 2
+
+```
+
+# Feature Selection
+In order to speed up all of the remaining script, I kickout genes with little
+variance to begin with:
+```{r}
+A_variances <- apply(A, 1, var)
+hist(A_variances, breaks=100, ylim = c(0,1000))
+abline(v=1e-4, col = "red")
+
+select_1006 <- A_variances > 1e-4
+```
+
+
+# Lasso regression for T cells
+Surprisingly, classifying T cells works perfect for every lambda - even when
+we exclude CD3E, (because it was used to select training and test data).
+```{r}
+y <- rep(NA, ncol(A))
+y[is_T_1] <- TRUE; y[not_T_1] <- FALSE
+training  <-  which(is_T_1 | not_T_1)
+
+holdout <- sample(training, floor(length(training)/10))
+holdin  <- setdiff(training, holdout)
+# train model on holdin dataset (crossvalidation training data) using lasso / elasticnet
+g <- glmnet( t(A[rownames(A) != "CD3E", holdin]), y[holdin], family = "binomial", lambda.min.ratio = 1e-4)
+# use this model to classify holdout dataset (crossvalidation validation data)
+# ('response' makes the model return a probability for each cell to be of class is_T_1)
+p <- predict(g, t(A[rownames(A) != "CD3E", holdout]), type = "response")
+# compute classification error, because for each holdout cell we know ground truth (is_T_1):
+model_error_estimate <-
+  apply(p,2, function(col) {
+    sum(log( ifelse(y[holdout], col, 1-col) ))
+  })
+plot(g$lambda, model_error_estimate, log="x")
+```
+
+# Lasso regression CD8 / CD4 T cells
+
+```{r}
+
+
+
+
+y <- rep(NA, ncol(A))
+y[anno$groundtruth_CD4T] <- TRUE; y[anno$groundtruth_CD8T] <- FALSE
+training  <-  which(anno$groundtruth_CD4T | anno$groundtruth_CD8T)
+
+
+# let glmnet find suitable lambdas that we can re-use many times:
+lambdas <- glmnet( t(A[, training]), y[training], family = "binomial")
+                   
+
+
+
+holdout <- sample(training, floor(length(training)/10))
+holdin  <- setdiff(training, holdout)
+# train model on holdin dataset (crossvalidation training data) using lasso / elasticnet
+g <- glmnet( t(A[, holdin]), y[holdin], family = "binomial", lambda.min.ratio = 1e-4)
+# use this model to classify holdout dataset (crossvalidation validation data)
+# ('response' makes the model return a probability for each cell to be of class is_T_1)
+p <- predict(g, t(A[, holdout]), type = "response")
+eta <- predict(g, t(A[, ]), type = "link")
+# compute classification error, because for each holdout cell we know ground truth (is_T_1):
+model_error_estimate <-
+  apply(p,2, function(col) {
+    sum(log( ifelse(y[holdout], col, 1-col) ))
+  })
+plot(g$lambda, model_error_estimate, log="x")
+
+
+
+
+
+```
+
+```{r}
+plot(colSums(rawC)[anno$groundtruth_CD4T | anno$groundtruth_CD8T], eta[anno$groundtruth_CD4T | anno$groundtruth_CD8T,49], pch=".", log="x")
+
+
+```
+
