@@ -1,0 +1,291 @@
+---
+title: "Compare machine learning algorithms"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+The ML algorithms are e.g. NBNB with Ridge / logistic / LASSO regression.
+
+We believe Machine learning-based classification is a powerful alternative 
+to clustering and could envision particularly good performance in certain
+situations:
+
+  * comparing multiple samples (lymphnodes from multiple cancer patients, etc):
+    rather than making cells align in a tSNE, once classified we could compare
+    them within each sample and then compare results across samples.
+  * resolving 'tSNE blobs': some cell types are transcriptomically highly
+    similar (e.g. naive CD4 T cells and CD8 T cells, ISCs and enteroblasts, ...),
+    but telling them apart is possible when focusing on the right genes - typical
+    classification problem where clustering on all genes will always be outperformed.
+    
+
+In this script, I test different machine learning techniques for point two:
+how to discriminate transcriptomically highly similar cells. For that, I take
+all CD4 and CD8 T cells from the CITEseq dataset chosen based on the
+protein markers ( ~ groundtruth), give the same subsets of both to classifiers
+and test their performance.
+
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+library(parallelDist)
+library(glmnet)
+library(devtools) # for session_info()
+```
+## Classifier functions
+```{r}
+source("~/sc_methods/nb_sc/src/NBNB_functions.R")
+sepscore <- function(dispersiontable) {
+  g  = dispersiontable$gene
+  mp = dispersiontable$meanPos 
+  mn = dispersiontable$meanNeg
+  dp = dispersiontable$dispPos
+  dn = dispersiontable$dispNeg
+  
+  varp = mp + dp * mp * mp
+  varn = mn + dn * mn * mn
+  
+  sepscore <- (mp - mn) / (sqrt(varp) + sqrt(varn))
+  names(sepscore) <- g
+ return(sepscore) 
+}
+```
+
+
+
+## Load data from SDS
+```{r readCSVs}
+citeseqDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/"
+
+
+rawC <- as.matrix(
+        read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_RawCounts_2018Aug08.csv"),
+                 header = T, row.names = 1))
+anno <- read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_CellAnnotation_2018Aug08.csv"),
+                 header = T, row.names = 1)
+
+```
+
+# The challenge
+
+## Cell types (ground truth)
+Using CITEseq protein data, I have found around 3000 cells for which I am certain
+they are CD4 and CD8 T cells, respectively. I consider this the `ground truth` against
+which I can compare performance of different ML algorithms. Here they are:
+```{r}
+allT <- anno$groundtruth_CD4T | anno$groundtruth_CD8T
+rawT  <- rawC[, allT]
+normT <- apply(rawT, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+
+groundtruth <- ifelse(anno$groundtruth_CD4T[allT], "CD4", "CD8")
+idx_cd4 <- which(anno$groundtruth_CD4T[allT])
+idx_cd8 <- which(anno$groundtruth_CD8T[allT])
+```
+
+## Training data
+I set the first ML challenge as follows:
+Which methods best classifies ~ 3000 naive T cells (cord blood) into CD4 T and CD8 T
+when given 100 randomly selected CD4 and 50 randomly selected CD8 cells?
+
+Note that this is an artificial example, in reality a researcher would probably
+find training CD4 and CD8 T cells based on high mRNA expression of CD8, CD4, etc.,
+and then use ML to classify the remaining T cells for which expression of these
+markers was not high enough. 
+
+I give more CD4 T cells here as there are 2727 CD4 but only 266 CD8 T cells - in
+other words, I'm starting rather easy and see what we get.
+
+```{r}
+n_positive_cells <- 100
+n_negative_cells <- 50
+
+cd4training <- sample(idx_cd4, n_positive_cells)
+cd8training <- sample(idx_cd8, n_negative_cells)
+
+```
+
+
+# NBNB
+pre-select features for speedup during crossvalidation:
+```{r}
+# for NBNB we need a TRUE-FALSE vector
+cd4trainingB <- cd8trainingB <- rep(FALSE, ncol(rawT))
+cd4trainingB[cd4training] <- TRUE
+cd8trainingB[cd8training] <- TRUE
+dt <- trainNB(rawT, isPositive = cd4trainingB, isNegative = cd8trainingB)
+dt$sepScore <- sepscore(dt)
+nbgenes <- order(abs(dt$sepScore), decreasing = T)[1:7000] # nas and uninformative genes should now be excluded
+
+
+```
+Compute size factors:
+```{r}
+# we still want size factors to represent the entire count matrix to avoid artifacts:
+sfT <- colSums(rawT) / mean(colSums(rawT))
+```
+
+
+
+## Crossvalidation for feature selection:
+
+
+```{r}
+# classification improves when we only use `n` features with highest separation
+# scores. So we do k-fold crossvalidation to find ideal `n`:
+
+
+
+
+
+
+validateNB <- function(n) {
+  # for the n highest separating genes, compute classification Error
+  # using 10-fold crossvalidation. Error = 1/10 sum(10 x Numer_WrongClassifications)
+ktest_cd4 <- sample(cd4training, floor(n_positive_cells / 10))
+ktest_cd8 <- sample(cd8training, floor(n_negative_cells / 10))
+
+ktrain_cd4 <- setdiff(cd4training, ktest_cd4)
+ktrain_cd8 <- setdiff(cd8training, ktest_cd8)
+
+# NBNB needs TRUE/FALSE boolean, so we convert the indices:
+ktrain_cd4B <- ktrain_cd8B <- rep(FALSE, ncol(rawT))
+ktrain_cd4B[ktrain_cd4] <- TRUE
+ktrain_cd8B[ktrain_cd8] <- TRUE
+
+# we train NBNB on ktrain data:
+dt <- trainNB(rawT[nbgenes, ], isPositive = ktrain_cd4B, isNegative = ktrain_cd8B,
+              sf = sfT)
+dt$sepScore <- sepscore(dt)
+
+# score is computed on the n genes with highest separation scores:
+topGenes <- (dt$gene[order(abs(dt$sepScore), decreasing = T)[1:n]])
+
+# 
+score <- NBNB(cbind(rawT[topGenes, ktest_cd4], rawT[topGenes, ktest_cd8]),
+              dt[dt$gene %in% topGenes, ],
+              sf = c(sfT[ktest_cd4], sfT[ktest_cd8] ))
+predictedClass <- score > 0 # T = CD4, F = CD8
+   actualClass <- groundtruth[c(ktest_cd4, ktest_cd8)] == "CD4"
+wrongClassifications <- sum(predictedClass != actualClass)
+return(wrongClassifications)
+}
+
+
+crossvalidation_NB <- data.frame()
+for(n in round(10^(seq(1,  log10(7000), by=0.4  # .1 would be better
+                       )))){ 
+print(paste0("nGene =  ", n))
+crossvalidation_NB <- rbind(crossvalidation_NB, 
+                            data.frame(nGene = n,
+# 10-fold crossvalidation:
+average_wrongClassifications = mean(replicate(n = 10, validateNB(n = 5)))))
+}
+```
+
+```{r saveNBcrossvalid, eval = F}
+save.image("~/sc_methods/regression/compareML.RData")
+```
+
+```{r}
+NBNB_optimum <- crossvalidation_NB$nGene[which.min(crossvalidation_NB$average_wrongClassifications)]
+plot(crossvalidation_NB$nGene, crossvalidation_NB$average_wrongClassifications,
+     log = "x", pch = 20, main = "10-fold crossvalidation to find optimal nGene for Feature selection\n(selecting genes with highest separation scores)")
+abline(v = NBNB_optimum, col = "red")
+```
+
+## NBNB performance
+
+
+
+```{r}
+dispersionTbl <- trainNB(rawT,
+                         isPositive = cd4trainingB,
+                         isNegative = cd8trainingB,
+                         sf = sfT)
+dispersionTbl$sepScore <- sepscore(dispersionTbl)
+
+NBtopGenes <- (dispersionTbl$gene[order(
+            abs(dispersionTbl$sepScore), decreasing = T)[1:NBNB_optimum]])
+
+# 
+NBNBscore <- NBNB(rawT,
+              dispersionTbl[dispersionTbl$gene %in% NBtopGenes, ],
+              sf = sfT)
+
+NBprediction <- NBNBscore > 0 # TRUE = CD4 T, FALSE = CD8 T cells
+actualClass  <- groundtruth == "CD4"
+table(NBprediction, actualClass)
+```
+
+We correctly assigned 2669 out of 2727 CD4 cells (97 %) and 254 out of 266 CD8 T cells (95 %).
+
+Surprisingly, CD4 is not within the gene list NBtopGenes! GPR183 is, though.
+
+
+
+
+
+# Ridge regression
+
+
+
+Using regression requires normalized and variance-stabiliced data, so we use
+Anscombe normalization:
+```{r}
+A          <- apply(rawT, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+```
+
+Feature selection to speed up crossvalidation process:
+```{r}
+A_variances <- apply(A, 1, var)
+Acutoff <- 1e-5
+hist(A_variances, breaks=200, ylim = c(0, 2000))
+abline(v=Acutoff, col = "red")
+
+Aselect <- A_variances > Acutoff
+```
+
+Find suitable lambdas (for penalty term) which we then use in every crossvalidation
+step for comparability:
+```{r}
+# let glmnet find suitable lambdas that we can re-use many times:
+lambdas <- glmnet( x = t(                 A[, c(cd4training, cd8training)]),
+                   y = as.factor(groundtruth[ c(cd4training, cd8training)]),
+                   family = "binomial")$lambda
+```
+
+## Crossvalidation for penalty selection
+
+```{r}
+# train model on holdin dataset (crossvalidation training data) using lasso / elasticnet
+g <- glmnet( t(A[, holdin]), y[holdin], family = "binomial", lambda.min.ratio = 1e-4)
+# use this model to classify holdout dataset (crossvalidation validation data)
+# ('response' makes the model return a probability for each cell to be of class is_T_1)
+p <- predict(g, t(A[, holdout]), type = "response")
+eta <- predict(g, t(A[, ]), type = "link")
+# compute classification error, because for each holdout cell we know ground truth (is_T_1):
+model_error_estimate <-
+  apply(p,2, function(col) {
+    sum(log( ifelse(y[holdout], col, 1-col) ))
+  })
+```
+
+
+
+
+
+
+
+
+
