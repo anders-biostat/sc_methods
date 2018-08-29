@@ -236,10 +236,10 @@ Surprisingly, CD4 is not within the gene list NBtopGenes! GPR183 is, though.
 
 
 
-# Ridge regression
+# Ridge, the LASSO and elastig net regression
 
 
-
+## Normalization and Filtering
 Using regression requires normalized and variance-stabiliced data, so we use
 Anscombe normalization:
 ```{r}
@@ -256,33 +256,64 @@ abline(v=Acutoff, col = "red")
 Aselect <- A_variances > Acutoff
 ```
 
-Find suitable lambdas (for penalty term) which we then use in every crossvalidation
-step for comparability:
-```{r}
-# let glmnet find suitable lambdas that we can re-use many times:
-lambdas <- glmnet( x = t(                 A[, c(cd4training, cd8training)]),
-                   y = as.factor(groundtruth[ c(cd4training, cd8training)]),
-                   family = "binomial")$lambda
-```
-
 ## Crossvalidation for penalty selection
 
 ```{r}
-# train model on holdin dataset (crossvalidation training data) using lasso / elasticnet
-g <- glmnet( t(A[, holdin]), y[holdin], family = "binomial", lambda.min.ratio = 1e-4)
-# use this model to classify holdout dataset (crossvalidation validation data)
-# ('response' makes the model return a probability for each cell to be of class is_T_1)
-p <- predict(g, t(A[, holdout]), type = "response")
-eta <- predict(g, t(A[, ]), type = "link")
-# compute classification error, because for each holdout cell we know ground truth (is_T_1):
-model_error_estimate <-
-  apply(p,2, function(col) {
-    sum(log( ifelse(y[holdout], col, 1-col) ))
-  })
+# Default of nfold is to do 10-fold crossvalidation:
+cv_ridge <- cv.glmnet( x = t(A[Aselect, c(cd4training, cd8training)]),
+                   y = as.factor(groundtruth[ c(cd4training, cd8training)]),
+                   family = "binomial",
+                   alpha  = 0,   # ridge penalty only  ->  ridge regression
+                   type.measure = "class" # gives misclassification error
+                   )
+
+cv_lasso <- cv.glmnet( x = t(A[Aselect, c(cd4training, cd8training)]),
+                   y = as.factor(groundtruth[ c(cd4training, cd8training)]),
+                   family = "binomial",
+                   alpha  = 1,   # lasso penaly only -> LASSO regression
+                   type.measure = "class" # gives misclassification error
+                   )
+
+plot(cv_ridge); log(cv_ridge$lambda.min); log(cv_ridge$lambda.1se)
 ```
 
+```{r}
+print("Features selected by lasso (stringent regularization):\n")
+coef(cv_lasso, s = "lambda.1se")[coef(cv_lasso, s = "lambda.1se")[, 1] != 0, ]
+coef(cv_lasso, s = "lambda.1se")[coef(cv_lasso, s = "lambda.min")[, 1] != 0, ]
+```
 
+## Performance
+Qualitatively: did it assign the class correctly or not (when forced to assign all
+cells).
+```{r}
+table(
+  predict(cv_ridge, newx = t(A[Aselect, ]), s = "lambda.min", type = "class"),
+  groundtruth
+) 
+table(
+  predict(cv_ridge, newx = t(A[Aselect, ]), s = "lambda.1se", type = "class"),
+  groundtruth)
 
+table(
+  predict(cv_lasso, newx = t(A[Aselect, ]), s = "lambda.min", type = "class"),
+  groundtruth)
+table(
+  predict(cv_lasso, newx = t(A[Aselect, ]), s = "lambda.1se", type = "class"),
+  groundtruth)
+```
+
+Lasso with lambda.min (not as strictly regularized as lambda.1se) performs best:
+it correctly assigned 2719 out of 2727 CD4 T cells (99.7 %) and 191 out of 266 CD8 T cells (only 72 %).
+
+## Detailed Performance
+
+Let's look at how confident each cell is assigned - are the misclassifications
+low-confidence? 
+
+Hint: response gives the fitted probabilities - these you want to look at for misclassified cells.
+
+## TO DO __ CONTINUE HERE
 
 
 
