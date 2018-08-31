@@ -119,7 +119,7 @@ cd8training <- sample(idx_cd8, n_negative_cells)
 ```
 
 
-# NBNB
+# NBNB: scan for ideal `n`
 pre-select features for speedup during crossvalidation:
 ```{r}
 # for NBNB we need a TRUE-FALSE vector
@@ -204,7 +204,7 @@ plot(crossvalidation_NB$nGene, crossvalidation_NB$average_wrongClassifications,
 abline(v = NBNB_optimum, col = "red")
 ```
 
-## NBNB performance
+## NBNB: one single run
 
 
 
@@ -322,7 +322,7 @@ oneRound <- function( training_A = cd4training, training_B = cd8training){
 
 List2DF <- function(oneRound_output){
   newDF <- data.frame()
-  for(i in 1:length(multirounds)) {
+  for(i in 1:length(oneRound_output)) {
     x <- cbind(Run= i, oneRound_output[[i]]) 
     newDF <- rbind(newDF, x)
   }
@@ -399,10 +399,180 @@ low-confidence?
 Hint: response gives the fitted probabilities - these you want to look at for misclassified cells.
 
 
+
+
+
+
+
+
+
+
+
+# NBNB 
+
+I quickly want to check NBNB performance by running some replicates for
+reasonable values of `n` top features:
+
+```{r}
+# Later we'll sort genes by their separation scores and then classify only
+# using the `n` genes with highest separation scores:
+my_ntop <-20 * (4^(0:5))
+```
+
+
+```{r}
+
+
+
+
+oneRound_NBNB <- function( training_A = cd4training, training_B = cd8training){
+# R function of class "what a terrible, hardcoding piece of code!".
+  
+  
+  # for NBNB, training data currently has to be specified as TRUE-FALSE vector
+  cd4trainingB <- cd8trainingB <- rep(FALSE, ncol(rawT))
+  cd4trainingB[training_A] <- TRUE
+  cd8trainingB[training_B] <- TRUE
+
+ # train classifier
+  print("Train classifier...\n")
+  dispersionTbl <- trainNB(rawT,
+                         isPositive = cd4trainingB,
+                         isNegative = cd8trainingB,
+                         sf = sfT)
+  dispersionTbl$sepScore <- sepscore(dispersionTbl)
+
+ # classify with different number `n` of genes with highest separation scores: 
+   
+ print("Classify using different number of n genes...\n")
+ scores <- pbmclapply(my_ntop,
+              function(n) {
+               NBtopGenes <- (dispersionTbl$gene[order(
+                          abs(dispersionTbl$sepScore), decreasing = T)[1:n]])  
+               NBNBscore <- NBNB(rawT,
+                            dispersionTbl[dispersionTbl$gene %in% NBtopGenes, ],
+                            sf = sfT)
+              })
+ # for NBNB, classes A/B are assigned e.g. as A for positive scores and B for negative scores 
+ misclass <- pbmclapply(scores, function(s) {
+  cd4_miscl <- sum(groundtruth == "CD4" & s < 0)
+  cd8_miscl <- sum(groundtruth == "CD8" & s > 0)
+  return(c(cd4_misclass = cd4_miscl, cd8_misclass = cd8_miscl))
+ })
+ 
+ return(data.frame(nGenes = my_ntop, do.call(rbind, misclass)))
+}
+
+
+
+p_n2 <- function(df = addProportions(List2DF(NBNB_100_100))) {
+  # same as p_n, but for NBNB results (x-axis shows nGene instead of alpha)
+  # [p]lot [n]umbers of misclassified cells
+ p <- ggplot(df, aes(nGenes, Number_misclassified, col = Error_Numbers)) + geom_point() + scale_x_log10()
+ return(p + theme(legend.position="top"))
+}
+
+p_p2 <- function(df = addProportions(List2DF(NBNB_100_100))) {
+  # same as p_p, but for NBNB results (x-axis shows nGene instead of alpha)
+ p <- ggplot(df, aes(nGenes, Proportion_misclassified, col = Error_Proportions)) + geom_point() + scale_x_log10()
+ return(p + theme(legend.position="top"))
+}
+```
+
+
+
+
+```{r}
+
+NBNB_100_100 <- replicate(10, oneRound_NBNB(sample(idx_cd4, 100), sample(idx_cd8, 100)), simplify = FALSE)
+NBNB_50_50   <- replicate(10, oneRound_NBNB(sample(idx_cd4, 50), sample(idx_cd8, 50)), simplify = FALSE)
+NBNB_100_50  <- replicate(10, oneRound_NBNB(sample(idx_cd4, 100), sample(idx_cd8, 50)), simplify = FALSE)
+
+
+
+
+plot_grid(
+ # p_n(addProportions(List2DF(multi_100_100))) + ylim(0,230) + ggtitle("Elastic Net"),
+  p_p2(addProportions(List2DF(NBNB_100_50))) + ylim(0,1) + geom_smooth() +
+    ggtitle("NBNB with 100 + 50 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_100_100))) + ylim(0,1) + geom_smooth()+
+    ggtitle("NBNB with 100 + 100 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_50_50))) + ylim(0,1) + geom_smooth()  +
+    ggtitle("NBNB with 50 + 50 training cells (CD4 + CD8"),
+  ncol = 3
+)
+
+plot_grid(
+ # p_n(addProportions(List2DF(multi_100_100))) + ylim(0,230) + ggtitle("Elastic Net"),
+  p_n2(addProportions(List2DF(NBNB_100_50))) + ylim(0,300) + geom_smooth() +
+    ggtitle("NBNB with 100 + 50 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_100_100))) + ylim(0,300) + geom_smooth()+
+    ggtitle("NBNB with 100 + 100 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_50_50))) + ylim(0,300) + geom_smooth()  +
+    ggtitle("NBNB with 50 + 50 training cells (CD4 + CD8"),
+  ncol = 3
+)
+
+
+```
+
+
+
+## Performance Comparison
+
+Proportions:
+```{r}
+plot_grid(
+  p_p(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("ElasticNet\n100 CD4 & 50 CD8")+ ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("ElasticNet\n100 CD4 & 100 CD8")+ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("ElasticNet\n50 CD4 & 50 CD8")+ylim(c(0,.5)),
+  
+  p_p2(addProportions(List2DF(NBNB_100_50))) + ylim(0,.5) + geom_smooth() +
+    ggtitle("NBNB\n100 + 50 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_100_100))) + ylim(0,.5) + geom_smooth()+
+    ggtitle("NBNB\n100 + 100 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_50_50))) + ylim(0,.5) + geom_smooth()  +
+    ggtitle("NBNB\n50 + 50 training cells (CD4 + CD8"), 
+  ncol = 3,
+  nrow = 2
+)
+```
+
+Absolute Numbers:
+```{r}
+plot_grid(
+  p_n(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("ElasticNet\n100 CD4 & 50 CD8")+ ylim(c(0,300)),
+  p_n(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("ElasticNet\n100 CD4 & 100 CD8")+ylim(c(0,300)),
+  p_n(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("ElasticNet\n50 CD4 & 50 CD8")+ylim(c(0,300)),
+  
+  p_n2(addProportions(List2DF(NBNB_100_50))) + ylim(0,300) + geom_smooth() +
+    ggtitle("NBNB\n100 + 50 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_100_100))) + ylim(0,300) + geom_smooth()+
+    ggtitle("NBNB\n100 + 100 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_50_50))) + ylim(0,300) + geom_smooth()  +
+    ggtitle("NBNB\n50 + 50 training cells (CD4 + CD8"), 
+  ncol = 3,
+  nrow = 2
+)
+```
+
+
+
+
+
+
+
 # Save / Load image
 
 ```{r saveNBcrossvalid, eval = F}
-save.image("~/sc_methods/regression/compareML.RData")
+# save.image("~/sc_methods/regression/compareML.RData")
+load("~/sc_methods/regression/compareML.RData")
 ```
 
 
