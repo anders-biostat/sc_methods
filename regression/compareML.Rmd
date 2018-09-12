@@ -578,6 +578,58 @@ load("~/sc_methods/regression/compareML.RData")
 
 
 
+
+
+
+
+
+
+
+
+
+# Downsample
+
+```{r}
+downsample <- function(matrix, p=.8) {
+  m <-   matrix(rbinom(n    = nrow(matrix)*ncol(matrix),
+                 size = matrix,
+                 prob = p),
+                nrow = nrow(matrix))
+  rownames(m) <- rownames(matrix)
+  colnames(m) <- colnames(matrix)
+  return(m)
+}# cnt <- matrix(sample(c(rpois(12, lambda = 5), rpois(12, lambda = .3))), nrow = 6)
+
+
+
+
+
+
+
+rawC.8 <- downsample(rawC, p = .8)
+rawC.6 <- downsample(rawC, p = .6)
+rawC.4 <- downsample(rawC, p = .4)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # End of Script
 
 ## Notes on glmnet package
