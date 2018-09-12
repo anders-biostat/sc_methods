@@ -1,0 +1,677 @@
+---
+title: "Compare machine learning algorithms"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+The ML algorithms are e.g. NBNB with Ridge / logistic / LASSO regression.
+
+We believe Machine learning-based classification is a powerful alternative 
+to clustering and could envision particularly good performance in certain
+situations:
+
+  * comparing multiple samples (lymphnodes from multiple cancer patients, etc):
+    rather than making cells align in a tSNE, once classified we could compare
+    them within each sample and then compare results across samples.
+  * resolving 'tSNE blobs': some cell types are transcriptomically highly
+    similar (e.g. naive CD4 T cells and CD8 T cells, ISCs and enteroblasts, ...),
+    but telling them apart is possible when focusing on the right genes - typical
+    classification problem where clustering on all genes will always be outperformed.
+    
+
+In this script, I test different machine learning techniques for point two:
+how to discriminate transcriptomically highly similar cells. For that, I take
+all CD4 and CD8 T cells from the CITEseq dataset chosen based on the
+protein markers ( ~ groundtruth), give the same subsets of both to classifiers
+and test their performance.
+
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+library(parallelDist)
+library(glmnet)
+library(tidyverse) # for magrittr's pipe, gather, etc.
+library(ggplot2)
+library(cowplot)
+library(devtools) # for session_info()
+```
+## Classifier functions
+```{r}
+source("~/sc_methods/nb_sc/src/NBNB_functions.R")
+sepscore <- function(dispersiontable) {
+  g  = dispersiontable$gene
+  mp = dispersiontable$meanPos 
+  mn = dispersiontable$meanNeg
+  dp = dispersiontable$dispPos
+  dn = dispersiontable$dispNeg
+  
+  varp = mp + dp * mp * mp
+  varn = mn + dn * mn * mn
+  
+  sepscore <- (mp - mn) / (sqrt(varp) + sqrt(varn))
+  names(sepscore) <- g
+ return(sepscore) 
+}
+```
+
+
+
+## Load data from SDS
+```{r readCSVs}
+citeseqDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/"
+
+
+rawC <- as.matrix(
+        read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_RawCounts_2018Aug08.csv"),
+                 header = T, row.names = 1))
+anno <- read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_CellAnnotation_2018Aug08.csv"),
+                 header = T, row.names = 1)
+
+```
+
+# The challenge
+
+## Cell types (ground truth)
+Using CITEseq protein data, I have found around 3000 cells for which I am certain
+they are CD4 and CD8 T cells, respectively. I consider this the `ground truth` against
+which I can compare performance of different ML algorithms. Here they are:
+```{r}
+allT <- anno$groundtruth_CD4T | anno$groundtruth_CD8T
+rawT  <- rawC[, allT]
+normT <- apply(rawT, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+
+groundtruth <- ifelse(anno$groundtruth_CD4T[allT], "CD4", "CD8")
+idx_cd4 <- which(anno$groundtruth_CD4T[allT])
+idx_cd8 <- which(anno$groundtruth_CD8T[allT])
+```
+
+## Training data
+I set the first ML challenge as follows:
+Which methods best classifies ~ 3000 naive T cells (cord blood) into CD4 T and CD8 T
+when given 100 randomly selected CD4 and 50 randomly selected CD8 cells?
+
+Note that this is an artificial example, in reality a researcher would probably
+find training CD4 and CD8 T cells based on high mRNA expression of CD8, CD4, etc.,
+and then use ML to classify the remaining T cells for which expression of these
+markers was not high enough. 
+
+I give more CD4 T cells here as there are 2727 CD4 but only 266 CD8 T cells - in
+other words, I'm starting rather easy and see what we get.
+
+```{r}
+n_positive_cells <- 100
+n_negative_cells <- 50
+
+cd4training <- sample(idx_cd4, n_positive_cells)
+cd8training <- sample(idx_cd8, n_negative_cells)
+
+```
+
+
+# NBNB: scan for ideal `n`
+pre-select features for speedup during crossvalidation:
+```{r}
+# for NBNB we need a TRUE-FALSE vector
+cd4trainingB <- cd8trainingB <- rep(FALSE, ncol(rawT))
+cd4trainingB[cd4training] <- TRUE
+cd8trainingB[cd8training] <- TRUE
+dt <- trainNB(rawT, isPositive = cd4trainingB, isNegative = cd8trainingB)
+dt$sepScore <- sepscore(dt)
+nbgenes <- order(abs(dt$sepScore), decreasing = T)[1:7000] # nas and uninformative genes should now be excluded
+
+
+```
+Compute size factors:
+```{r}
+# we still want size factors to represent the entire count matrix to avoid artifacts:
+sfT <- colSums(rawT) / mean(colSums(rawT))
+```
+
+
+
+## Crossvalidation for feature selection:
+
+
+```{r}
+# classification improves when we only use `n` features with highest separation
+# scores. So we do k-fold crossvalidation to find ideal `n`:
+
+
+
+
+
+
+validateNB <- function(n) {
+  # for the n highest separating genes, compute classification Error
+  # using 10-fold crossvalidation. Error = 1/10 sum(10 x Numer_WrongClassifications)
+ktest_cd4 <- sample(cd4training, floor(n_positive_cells / 10))
+ktest_cd8 <- sample(cd8training, floor(n_negative_cells / 10))
+
+ktrain_cd4 <- setdiff(cd4training, ktest_cd4)
+ktrain_cd8 <- setdiff(cd8training, ktest_cd8)
+
+# NBNB needs TRUE/FALSE boolean, so we convert the indices:
+ktrain_cd4B <- ktrain_cd8B <- rep(FALSE, ncol(rawT))
+ktrain_cd4B[ktrain_cd4] <- TRUE
+ktrain_cd8B[ktrain_cd8] <- TRUE
+
+# we train NBNB on ktrain data:
+dt <- trainNB(rawT[nbgenes, ], isPositive = ktrain_cd4B, isNegative = ktrain_cd8B,
+              sf = sfT)
+dt$sepScore <- sepscore(dt)
+
+# score is computed on the n genes with highest separation scores:
+topGenes <- (dt$gene[order(abs(dt$sepScore), decreasing = T)[1:n]])
+
+# 
+score <- NBNB(cbind(rawT[topGenes, ktest_cd4], rawT[topGenes, ktest_cd8]),
+              dt[dt$gene %in% topGenes, ],
+              sf = c(sfT[ktest_cd4], sfT[ktest_cd8] ))
+predictedClass <- score > 0 # T = CD4, F = CD8
+   actualClass <- groundtruth[c(ktest_cd4, ktest_cd8)] == "CD4"
+wrongClassifications <- sum(predictedClass != actualClass)
+return(wrongClassifications)
+}
+
+
+crossvalidation_NB <- data.frame()
+for(n in round(10^(seq(1,  log10(7000), by=0.4  # .1 would be better
+                       )))){ 
+print(paste0("nGene =  ", n))
+crossvalidation_NB <- rbind(crossvalidation_NB, 
+                            data.frame(nGene = n,
+# 10-fold crossvalidation:
+average_wrongClassifications = mean(replicate(n = 10, validateNB(n = 5)))))
+}
+```
+
+
+```{r}
+NBNB_optimum <- crossvalidation_NB$nGene[which.min(crossvalidation_NB$average_wrongClassifications)]
+plot(crossvalidation_NB$nGene, crossvalidation_NB$average_wrongClassifications,
+     log = "x", pch = 20, main = "10-fold crossvalidation to find optimal nGene for Feature selection\n(selecting genes with highest separation scores)")
+abline(v = NBNB_optimum, col = "red")
+```
+
+## NBNB: one single run
+
+
+
+```{r}
+dispersionTbl <- trainNB(rawT,
+                         isPositive = cd4trainingB,
+                         isNegative = cd8trainingB,
+                         sf = sfT)
+dispersionTbl$sepScore <- sepscore(dispersionTbl)
+
+NBtopGenes <- (dispersionTbl$gene[order(
+            abs(dispersionTbl$sepScore), decreasing = T)[1:NBNB_optimum]])
+
+# 
+NBNBscore <- NBNB(rawT,
+              dispersionTbl[dispersionTbl$gene %in% NBtopGenes, ],
+              sf = sfT)
+
+NBprediction <- NBNBscore > 0 # TRUE = CD4 T, FALSE = CD8 T cells
+actualClass  <- groundtruth == "CD4"
+table(NBprediction, actualClass)
+```
+
+We correctly assigned 2669 out of 2727 CD4 cells (97 %) and 254 out of 266 CD8 T cells (95 %).
+
+Surprisingly, CD4 is not within the gene list NBtopGenes! GPR183 is, though.
+
+
+
+
+
+# Regression: ridge, lasso, elastic net 
+
+
+## Normalization
+Using regression requires normalized and variance-stabiliced data, so we use
+Anscombe normalization:
+```{r}
+A          <- apply(rawT, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+```
+
+
+## Filtering
+Feature selection to speed up crossvalidation process:
+```{r}
+A_variances <- apply(A, 1, var)
+Acutoff <- 1e-5
+hist(A_variances, breaks=200, ylim = c(0, 2000))
+abline(v=Acutoff, col = "red")
+
+Aselect <- A_variances > Acutoff
+```
+
+
+
+## Set parameters
+```{r}
+# by hand I figured out that these are reasonable parameter ranges (not shown):
+my_lambdas   <- 10^seq(-10, 1, length.out = 100)
+my_alphas    <- seq(0,1, by = .1)
+```
+
+## compute classifications
+
+Let's resample our training data several times, and each time find optimal lambda 
+(using 10-fold Crossvalidation) and then
+classify all ~ 3000 cells. We do this for different alpha values between 0 and 1
+to see its impact.
+
+Here is a terrible function to compute this for one test-data set (`oneRound`),
+a helper function to cast the results into a nice dataframe (`List2DF`), and
+three functions to create interpretable ggplots from it:
+```{r uglyFunctions}
+
+oneRound <- function( training_A = cd4training, training_B = cd8training){
+# R function of class "what a terrible, hardcoding piece of code!".
+  
+ # for each alpha we'll use the same 10 groups in crossvalidation to make them comparable:
+ cv_labels = as.numeric(replicate(length(c(training_A, training_B)) / 10, sample(1:10)))
+ 
+ fits <- pbmclapply(my_alphas,
+   function(a) {
+                cv.glmnet( x = t(A[Aselect, c(training_A, training_B)]),
+                y = as.factor(groundtruth[ c( training_A, training_B)]),
+                family = "binomial",
+                foldid = cv_labels,
+                type.measure = "class", # gives misclassification error
+                alpha  = a,
+                lambda = my_lambdas
+                )}
+   )
+ 
+ # for each alpha, we extract information: 
+ #   * how many coefficients were non-zero (nGene)
+ #   * ridge penalty term sum_of_squared_coefficients
+ #   * lasso penalty term sum_of_coefficients
+ nGenes <- unlist(lapply(fits, function(fit) sum(coef(fit, s = "lambda.1se")[, 1] != 0)))
+ ridge_penalties <- unlist(lapply(fits, function(fit) sum(coef(fit, s = "lambda.1se")[, 1]^2)))
+ lasso_penalties <- unlist(lapply(fits, function(fit) sum(coef(fit, s = "lambda.1se")[, 1])))
+ lambdas_1se     <- unlist(lapply(fits, function(fit) fit$lambda.1se))
+ #   * missclassified CD4 T cells
+ #   * missclassified CD8 T cells
+ misclass <- pbmclapply(fits, function(fit) {
+  predicted <- predict(fit, newx = t(A[Aselect, ]), s = "lambda.1se",
+              type = "class")[, 1]
+  cd4_miscl <- sum(groundtruth == "CD4" & predicted == "CD8") 
+  cd8_miscl <- sum(groundtruth == "CD8" & predicted == "CD4")
+  return(c(cd4_misclass = cd4_miscl, cd8_misclass = cd8_miscl))
+ })
+ 
+ return(
+   data.frame(alpha = my_alphas, lambdas_1se, nGenes, ridge_penalties, lasso_penalties,
+              do.call(rbind, misclass))
+ )}
+
+List2DF <- function(oneRound_output){
+  newDF <- data.frame()
+  for(i in 1:length(oneRound_output)) {
+    x <- cbind(Run= i, oneRound_output[[i]]) 
+    newDF <- rbind(newDF, x)
+  }
+  return(newDF)
+}
+
+
+addProportions <- function( df = List2DF(multi_50_50)) {
+  df <- df %>%
+    mutate(cd4_misclass_proportion = cd4_misclass / sum(groundtruth == "CD4")) %>%
+    mutate(cd8_misclass_proportion = cd8_misclass / sum(groundtruth == "CD8")) %>%
+    
+    gather(key = Error_Numbers, value = Number_misclassified, cd4_misclass:cd8_misclass) %>%
+    gather(key = Error_Proportions, value = Proportion_misclassified, cd4_misclass_proportion:cd8_misclass_proportion)
+  return(df)
+}
+
+p_n <- function(df = addProportions(List2DF(multi_50_50))){
+# [p]lot [n]umbers of misclassified cells
+  ggplot(df, aes(x=alpha, y=Number_misclassified, col = Error_Numbers))+geom_point()+geom_smooth()
+}
+p_p <- function(df){
+# [p]lot [p]roportions of misclassified cells
+  ggplot(df, aes(x=alpha, y=Proportion_misclassified, col = Error_Proportions))+geom_point()+geom_smooth()
+}
+```
+
+As mentioned above we resample the training data multiple times, and I try
+three different training data compositions to see its impact:
+```{r}
+# 100 CD4, 50 CD8 T cells
+multi_100_50 <- replicate(10, oneRound(sample(idx_cd4, 100), sample(idx_cd8, 50)), simplify = FALSE)
+multi_50_50  <- replicate(10, oneRound(sample(idx_cd4, 50), sample(idx_cd8, 50)), simplify = FALSE)
+multi_100_100<- replicate(10, oneRound(sample(idx_cd4, 100), sample(idx_cd8, 100)), simplify = FALSE)
+```
+
+## Performance by counting misclassification
+ 
+  
+```{r}
+plot_grid(
+  p_p(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("100 CD4 & 50 CD8\nTraining cells")+ ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("100 CD4 & 100 CD8\nTraining cells")+ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("50 CD4 & 50 CD8\nTraining cells")+ylim(c(0,.5)),
+  ncol = 3
+)
+```
+Same plot with numbers (remember that we only have 266 CD8 T cells, and that 50/100 
+out of those are training data!):
+```{r}
+plot_grid(
+  p_n(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("100 CD4 & 50 CD8\nTraining cells")+ ylim(c(0, 420)),
+  p_n(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("100 CD4 & 100 CD8\nTraining cells")+ylim(c(0, 420)),
+  p_n(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("50 CD4 & 50 CD8\nTraining cells")+ylim(c(0, 420)),
+  ncol = 3
+)
+```
+
+
+
+
+
+## Detailed Performance
+
+Let's look at how confident each cell is assigned - are the misclassifications
+low-confidence? 
+
+Hint: response gives the fitted probabilities - these you want to look at for misclassified cells.
+
+
+
+
+
+
+
+
+
+
+
+# NBNB 
+
+I quickly want to check NBNB performance by running some replicates for
+reasonable values of `n` top features:
+
+```{r}
+# Later we'll sort genes by their separation scores and then classify only
+# using the `n` genes with highest separation scores:
+my_ntop <-20 * (4^(0:5))
+```
+
+
+```{r}
+
+
+
+
+oneRound_NBNB <- function( training_A = cd4training, training_B = cd8training){
+# R function of class "what a terrible, hardcoding piece of code!".
+  
+  
+  # for NBNB, training data currently has to be specified as TRUE-FALSE vector
+  cd4trainingB <- cd8trainingB <- rep(FALSE, ncol(rawT))
+  cd4trainingB[training_A] <- TRUE
+  cd8trainingB[training_B] <- TRUE
+
+ # train classifier
+  print("Train classifier...\n")
+  dispersionTbl <- trainNB(rawT,
+                         isPositive = cd4trainingB,
+                         isNegative = cd8trainingB,
+                         sf = sfT)
+  dispersionTbl$sepScore <- sepscore(dispersionTbl)
+
+ # classify with different number `n` of genes with highest separation scores: 
+   
+ print("Classify using different number of n genes...\n")
+ scores <- pbmclapply(my_ntop,
+              function(n) {
+               NBtopGenes <- (dispersionTbl$gene[order(
+                          abs(dispersionTbl$sepScore), decreasing = T)[1:n]])  
+               NBNBscore <- NBNB(rawT,
+                            dispersionTbl[dispersionTbl$gene %in% NBtopGenes, ],
+                            sf = sfT)
+              })
+ # for NBNB, classes A/B are assigned e.g. as A for positive scores and B for negative scores 
+ misclass <- pbmclapply(scores, function(s) {
+  cd4_miscl <- sum(groundtruth == "CD4" & s < 0)
+  cd8_miscl <- sum(groundtruth == "CD8" & s > 0)
+  return(c(cd4_misclass = cd4_miscl, cd8_misclass = cd8_miscl))
+ })
+ 
+ return(data.frame(nGenes = my_ntop, do.call(rbind, misclass)))
+}
+
+
+
+p_n2 <- function(df = addProportions(List2DF(NBNB_100_100))) {
+  # same as p_n, but for NBNB results (x-axis shows nGene instead of alpha)
+  # [p]lot [n]umbers of misclassified cells
+ p <- ggplot(df, aes(nGenes, Number_misclassified, col = Error_Numbers)) + geom_point() + scale_x_log10()
+ return(p + theme(legend.position="top"))
+}
+
+p_p2 <- function(df = addProportions(List2DF(NBNB_100_100))) {
+  # same as p_p, but for NBNB results (x-axis shows nGene instead of alpha)
+ p <- ggplot(df, aes(nGenes, Proportion_misclassified, col = Error_Proportions)) + geom_point() + scale_x_log10()
+ return(p + theme(legend.position="top"))
+}
+```
+
+
+
+
+```{r}
+
+NBNB_100_100 <- replicate(10, oneRound_NBNB(sample(idx_cd4, 100), sample(idx_cd8, 100)), simplify = FALSE)
+NBNB_50_50   <- replicate(10, oneRound_NBNB(sample(idx_cd4, 50), sample(idx_cd8, 50)), simplify = FALSE)
+NBNB_100_50  <- replicate(10, oneRound_NBNB(sample(idx_cd4, 100), sample(idx_cd8, 50)), simplify = FALSE)
+
+
+
+
+plot_grid(
+ # p_n(addProportions(List2DF(multi_100_100))) + ylim(0,230) + ggtitle("Elastic Net"),
+  p_p2(addProportions(List2DF(NBNB_100_50))) + ylim(0,1) + geom_smooth() +
+    ggtitle("NBNB with 100 + 50 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_100_100))) + ylim(0,1) + geom_smooth()+
+    ggtitle("NBNB with 100 + 100 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_50_50))) + ylim(0,1) + geom_smooth()  +
+    ggtitle("NBNB with 50 + 50 training cells (CD4 + CD8"),
+  ncol = 3
+)
+
+plot_grid(
+ # p_n(addProportions(List2DF(multi_100_100))) + ylim(0,230) + ggtitle("Elastic Net"),
+  p_n2(addProportions(List2DF(NBNB_100_50))) + ylim(0,300) + geom_smooth() +
+    ggtitle("NBNB with 100 + 50 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_100_100))) + ylim(0,300) + geom_smooth()+
+    ggtitle("NBNB with 100 + 100 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_50_50))) + ylim(0,300) + geom_smooth()  +
+    ggtitle("NBNB with 50 + 50 training cells (CD4 + CD8"),
+  ncol = 3
+)
+
+
+```
+
+
+
+## Performance Comparison
+
+Proportions:
+```{r}
+plot_grid(
+  p_p(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("ElasticNet\n100 CD4 & 50 CD8")+ ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("ElasticNet\n100 CD4 & 100 CD8")+ylim(c(0,.5)),
+  p_p(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("ElasticNet\n50 CD4 & 50 CD8")+ylim(c(0,.5)),
+  
+  p_p2(addProportions(List2DF(NBNB_100_50))) + ylim(0,.5) + geom_smooth() +
+    ggtitle("NBNB\n100 + 50 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_100_100))) + ylim(0,.5) + geom_smooth()+
+    ggtitle("NBNB\n100 + 100 training cells (CD4 + CD8"),
+  p_p2(addProportions(List2DF(NBNB_50_50))) + ylim(0,.5) + geom_smooth()  +
+    ggtitle("NBNB\n50 + 50 training cells (CD4 + CD8"), 
+  ncol = 3,
+  nrow = 2
+)
+```
+
+Absolute Numbers:
+```{r}
+plot_grid(
+  p_n(addProportions(List2DF(multi_100_50))) + theme(legend.position="top") +
+    ggtitle("ElasticNet\n100 CD4 & 50 CD8")+ ylim(c(0,300)),
+  p_n(addProportions(List2DF(multi_100_100)))+ theme(legend.position = "top") +
+    ggtitle("ElasticNet\n100 CD4 & 100 CD8")+ylim(c(0,300)),
+  p_n(addProportions(List2DF(multi_50_50))) + theme(legend.position = "top") +
+      ggtitle("ElasticNet\n50 CD4 & 50 CD8")+ylim(c(0,300)),
+  
+  p_n2(addProportions(List2DF(NBNB_100_50))) + ylim(0,300) + geom_smooth() +
+    ggtitle("NBNB\n100 + 50 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_100_100))) + ylim(0,300) + geom_smooth()+
+    ggtitle("NBNB\n100 + 100 training cells (CD4 + CD8"),
+  p_n2(addProportions(List2DF(NBNB_50_50))) + ylim(0,300) + geom_smooth()  +
+    ggtitle("NBNB\n50 + 50 training cells (CD4 + CD8"), 
+  ncol = 3,
+  nrow = 2
+)
+```
+
+
+
+
+
+
+
+# Save / Load image
+
+```{r saveNBcrossvalid, eval = F}
+# save.image("~/sc_methods/regression/compareML.RData")
+load("~/sc_methods/regression/compareML.RData")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Downsample
+
+```{r}
+downsample <- function(matrix, p=.8) {
+  m <-   matrix(rbinom(n    = nrow(matrix)*ncol(matrix),
+                 size = matrix,
+                 prob = p),
+                nrow = nrow(matrix))
+  rownames(m) <- rownames(matrix)
+  colnames(m) <- colnames(matrix)
+  return(m)
+}# cnt <- matrix(sample(c(rpois(12, lambda = 5), rpois(12, lambda = .3))), nrow = 6)
+
+
+
+
+
+
+
+rawC.8 <- downsample(rawC, p = .8)
+rawC.6 <- downsample(rawC, p = .6)
+rawC.4 <- downsample(rawC, p = .4)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# End of Script
+
+## Notes on glmnet package
+
+### Crossvalidation (cv.glmnet)
+lambda.1se: gives the most regularized model such that error is 
+within one standard error of the minimum.
+
+look at this thing, e.g. at the nonzero positions:
+    coef( cv.glmnetObject, s = "lambda.1se")
+
+
+
+### Classification (glmnet)
+    fit = glmnet(x, y)
+    plot(fit, label = TRUE) 
+The above shows coefs for different lambdas plus gene names.
+Here is the same for the deviance explained:
+    plot(fit, label = TRUE, xvar = "dev")
+
+Syntax to use cv.glmnet's output for classification:
+
+    predict(fit, newx = t(A[Aselect, ]), s = "lambda.1se",
+            type = "...") # not in docu but most useful: type="response", gives the probability of belonging to the second class.
+            
+            
+From the vignette:
+For logistic regression, `type` takes these arguments:
+
+  * link gives linear predictors
+  * class produces class labels corresponding to the maximum probability
+  * coefficients computes the coefficients at values of s (lambda)
+  * nonzero returns a list of the indices of nonzero coefficients for each s
+
+For “binomial” models, results (“link”, “response”, “coefficients”, “nonzero”) are
+returned only for the class corresponding to the second level of the factor response.
+
+
+
+## Session info
+
+```{r}
+devtools::session_info()
+```
+

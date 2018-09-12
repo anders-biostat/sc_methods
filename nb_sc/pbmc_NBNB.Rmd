@@ -1,0 +1,224 @@
+---
+title: "Unleash NBNB on 10x PBMC data"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+```
+
+
+## Load data from SDS:
+```{r}
+# file lie on the SDS:
+sds10x <- file.path("~","sds","sd17l002","p","scRNAseq_datasets",
+                    "10xGenomics_pbmc3k", "filtered_gene_bc_matrices", "hg19") 
+
+rawC <- Seurat::Read10X(sds10x)
+sf <- Matrix::colSums(rawC) / mean(Matrix::colSums(rawC))
+```
+
+
+
+
+# Find super-poissonian genes
+
+```{r}
+source("/home/felix/sc_methods/nb_sc/src/NBNB_functions.R")
+```
+
+```{r, eval=F}
+disptable <- pbmclapply(rownames(rawC), function(g) {
+   NBparams <- safe_fitNB(rawC[g, ], sf)
+   data.frame(gene = g, t(NBparams))
+ })
+# runs 18 min
+
+# saveRDS(do.call(rbind, disptable), "/home/felix/sc_methods/nb_sc/Robj_superpoissonGenes.rds")
+```
+
+```{r}
+disptable <- readRDS( "/home/felix/sc_methods/nb_sc/Robj_superpoissonGenes.rds")
+# even 1 NA is annoying and we kick it out:
+noNA <- colSums(apply(disptable, 1, is.na)) == 0
+# I pick superpoissonian genes as having dispersion clearly above 0:
+significant_dispersion <- (disptable$disp / disptable$SE_d) > 2
+
+```
+
+```{r}
+
+# d <- disptable[noNA & significant_dispersion,]
+
+plot(disptable$mean,
+     disptable$disp, log = "xy", pch=16, cex=.4); points(
+     disptable[noNA & significant_dispersion,"mean"],
+     disptable[noNA & significant_dispersion,"disp"], col="red", pch=16, cex=.4)
+
+```
+
+
+# Classify PBMCs
+
+```{r}
+library(parallelDist)
+
+# compute transformed / normalized expression:
+ds <- parallelDist::parDist(t(
+                apply(rawC[, ], 2, function(umi) { # computes anscombe + offset
+                      ans <- sqrt(umi+3/8) - sqrt(3/8)
+                      ans <- ans/sqrt(sum(ans^2))
+                      return(ans)}
+                      )[noNA & significant_dispersion, ]))
+# indices of each cell's 20 nearest neighbors:
+NN <- t(apply(as.matrix(ds), 1, function(row) head(order(row), n = 20)))
+```
+
+```{r}
+is_cd3  <- E["CD3E", ] > .02
+not_cd3 <- apply(NN, 1, function(nns) { sum(E["CD3E", nns]) == 0  })
+dt_cd3  <- do.call(rbind,
+                   trainNB((as.matrix(rawC)[noNA & significant_dispersion, ]), is_cd3, not_cd3))
+ s_cd3  <- NBNB(as.matrix(rawC)[noNA & significant_dispersion, ], dt_cd3)
+```
+
+
+
+
+
+# Analysis on 46 Best HVGs
+## 46 HVGs
+
+```{r}
+# manually select genes using plotly:
+# library(plotly)
+#    p <- plot_ly(d, x=~mean, y=~disp, text=~gene)
+#    layout(p, xaxis = list(type = "log"),
+#           yaxis = list(type = "log"))
+
+# select good genes by hand:
+gg <- c(
+  "MALAT1", "FTL", "FTH1", "LYZ", "CD74", "S100A4", "LTB", "HLA-DRA", "S100A9",
+  "CST3", "TYROBP", "NKG7", "S100A8", "CCL5", "LGALS1", "HLA-DPB1", "SAT1",
+  "COTL1", "IL32", "CTSS", "AIF1", "LST1", "FCER1G", "GNLY", "FCN1", "TYMP",
+  "HLA-DRB5", "CTSW", "LGALS2", "GZMB", "CD79A", "CST7", "CD79B", "IFITM3",
+  "FCGR3A", "PRF1", "CCL3", "GZMK", "TCL1A", "GZMH", "PPBP", "IGLL5", "PF4",
+  "IL8", "SPON2", "LINC00926"
+)
+plot(disptable$mean, disptable$disp, log = "xy", pch=16, cex=.4); points(disptable[disptable$gene %in% gg,"mean"], disptable[disptable$gene %in% gg,"disp"], col="red", pch=16, cex=.4)
+```
+
+## PCA and tsne
+
+```{r}
+library(umap)
+E <- apply(rawC[, ], 2, function(umi) { # Anscombe transformation with offset
+  ans <- sqrt(umi+3/8) - sqrt(3/8) # subtract offset=sqrt(3/8) so that a 0 stays a 0
+  ans/sqrt(sum(ans^2)) })
+pca <- prcomp(t(E[gg,]))
+umap <- umap(pca$x[,1:6])
+
+plot(umap$layout, pch=16, cex=.4)
+plot(pca$x[,1], pca$x[,2])
+
+u <- function(x) x/max(x)
+
+plot(umap$layout, pch=16, col = rgb(u(E["ITGAX",])^.5, u(E["CD8A",])^.1,u(E["CD3E",])^.2), cex=.6)
+```
+
+## Find out what 14 outlier cells are:
+Simon thinks it might be nice to quickly build the 
+Classifier on PPBP, PF4, GNG11 and SDPR and see if the ~ 14 outliers become more.
+```{r}
+library(genefilter)
+# 14 outlier cells can be selected by UMAP coordinates:
+o14 <- umap$layout[,1] > 5 & umap$layout[,2] > 2
+
+t14 <- rowttests(E, as.factor(o14))
+t14[order(t14$p.value, t14$dm),]
+
+
+
+
+
+
+
+
+
+
+
+
+is_ppbp <- E["PPBP", ] > .04
+not_ppbp <- apply(NN, 1, function(nns) { sum(E["PPBP", nns]) == 0  })
+dt_ppbp  <- trainNB((as.matrix(rawC)[noNA & significant_dispersion, ]), is_ppbp, not_ppbp)
+ s_ppbp  <- NBNB(as.matrix(rawC)[noNA & significant_dispersion, ], dt_ppbp)
+dt_ppbp <- do.call(rbind, dt_ppbp)
+
+
+
+```
+
+
+
+# [Felix notes and thoughts]
+
+## Start values matter
+
+Although using the `disp` function is slower, I would trust the estimated 
+dispersion more with it for low mus:
+```{r}
+g <- "TIE1"
+  microbenchmark::microbenchmark(
+  safe_fitNB(rawC[g, ], sf, c(mean(rawC[g,]), 1)),
+  safe_fitNB(rawC[g, ], sf, c(mean(rawC[g, ]), disp(rawC[g, ]))),
+  times = 20
+  )
+  
+  safe_fitNB(rawC[g, ], sf, c(mean(rawC[g,]), 1))
+  safe_fitNB(rawC[g, ], sf, c(mean(rawC[g, ]), disp(rawC[g, ])))
+```
+
+## Standard Error from Hessian matrix
+
+```{r}
+k  = rawC["CD3E", ]
+fit <- fitNB(k, sf)
+x <- seq(fit["disp"]*.8, fit["disp"]*1.2, by=fit["disp"]/100)
+plot(x, sapply(x, function(d) {
+  sum( lgamma( k + 1/d ) - lgamma( 1/d ) - lgamma( k+1 ) -( k + 1/d ) *
+         log( 1 + sf * d * fit["mu"]) + k * log( sf * d * fit["mu"] ) )}), 
+  ylab = "likelihood", xlab = "Dispersion");
+segments(fit["disp"] - fit["SE_d"], -3763, fit["disp"] + fit["SE_d"], -3763)
+```
+# Time delay due to sparse-dense conversion
+It's interesting to note that accessing a single line from a sparse matrix
+takes longer than for a dense one. Although this might simply be because for
+the dense one, the vector is not yet copied.
+
+
+```{r}
+mat_sparse <- rawC
+mat_dense  <- as.matrix(rawC)
+sparse <- function() {lapply(rownames(mat_sparse), function(g) {mat_sparse[g, ]; return()})}
+dense  <- function() {lapply(rownames(mat_dense),  function(g) {mat_dense[g, ]; return()})}
+
+dense1 <- function() {rawC_normal["CD3E", ]}
+sparse1<- function() {rawC["CD3E", ]}
+
+microbenchmark::microbenchmark(
+sparse1(), dense1(), times=20
+)
+```
+

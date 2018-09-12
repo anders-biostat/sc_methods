@@ -1,0 +1,499 @@
+---
+title: "Unleash NBNB on CITEseq data"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+# Script setup
+
+## Set CPU / Threads
+```{r}
+R.utils::setOption("mc.cores", 8)
+library(pbmcapply)
+library(parallelDist)
+library(devtools) # for session_info()
+```
+
+
+## Load data from SDS
+```{r readCSVs}
+citeseqDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/"
+
+
+rawC <- as.matrix(
+        read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_RawCounts_2018Aug08.csv"),
+                 header = T, row.names = 1))
+anno <- read.csv(paste0(citeseqDIR, "Seurat_workflow/Robjects/citeseq_CellAnnotation_2018Aug08.csv"),
+                 header = T, row.names = 1)
+
+```
+
+## Load NBNB classifier functions
+
+```{r}
+source("~/sc_methods/nb_sc/src/NBNB_functions.R")
+```
+
+
+# Precomputations
+
+
+## Downsampling
+We do not need this yet. Later we'll perhaps do it to simulate more shallow
+sequencing (as e.g. in DropSeq).
+
+```{r downsample, eval = F}
+
+downsample <- function(matrix, p=.8) {
+  m <-   matrix(rbinom(n    = nrow(matrix)*ncol(matrix),
+                 size = matrix,
+                 prob = p),
+                nrow = nrow(matrix))
+  rownames(m) <- rownames(matrix)
+  colnames(m) <- colnames(matrix)
+  return(m)
+}# cnt <- matrix(sample(c(rpois(12, lambda = 5), rpois(12, lambda = .3))), nrow = 6)
+
+
+
+
+
+
+
+rawC.8 <- downsample(rawC, p = .8)
+rawC.6 <- downsample(rawC, p = .6)
+rawC.4 <- downsample(rawC, p = .4)
+  
+```
+
+## Dispersion tables
+```{r dispTable_computation}
+
+dt1.0   <- computeDT(rawC)
+```
+Dispersion tables for downsampled matrices mostly contain the same 
+genes (not shown here). We do not need them at this point so I don't compute
+them.
+
+## Choose super-poissonian genes
+
+```{r, superPoissonianGenes}
+
+plot(log10(dt1.0$mean),
+     log10(dt1.0$disp/dt1.0$mean),
+     pch=".",
+     xlab = "log10(estimated mean)",
+     ylab = "log10(dispersion / mean)",
+     main = "Crude selection of Super-Poissonian genes")
+keep_1 <- log10(dt1.0$disp / dt1.0$mean) > -1.78 * log10(dt1.0$mean)
+points(log10(dt1.0$mean[keep_1]), log10(dt1.0$disp[keep_1]/dt1.0$mean[keep_1]), col="red", pch=".")
+abline(0, -1.78, col="red")
+
+
+selectSPgenes <- function(dispersionTable, slope = -1.78) {
+keep <- log10(dispersionTable$disp / dispersionTable$mean) > slope * log10(dispersionTable$mean) 
+plot(log10(dispersionTable$mean), log10(dispersionTable$disp/dispersionTable$mean), pch=".")
+# points(log10(dispersionTable$mean[keep]), log10(dispersionTable$disp[keep]/dispersionTable$mean[keep]), col="red", pch=".")
+abline(0, slope, col="red")
+return(keep)
+}
+
+keep <- selectSPgenes(dt1.0, slope=-1.78)
+
+
+
+```
+
+
+## Cell-cell Distances and neighbors
+
+To better define NBNB training data, we want to look at the nearest neighbors of each
+cell. For this we need distances, and I use Euclidean distance here based on the
+HVGs (superpoissonian genes).
+We use the superpoissonian genes only here, to make computation faster
+and possibly more precise (I assume distances would only get inflated by 
+mostly-zero genes).
+
+```{r normalization_and_distances}
+normC <-  t(t(rawC) / colSums(rawC))
+d_sqrt <- parallelDist::parDist(sqrt(t(normC[keep, ])), threads = getOption("mc.cores"))
+
+
+NN <- t(apply(as.matrix(d_sqrt), 1, function(row) head(order(row), n = 20)))
+plot(log10(dt1.0$mean), log10(dt1.0$disp/dt1.0$mean), pch=".", main =
+       "Genes used for distance computation")
+points(log10(dt1.0$mean[keep]), log10(dt1.0$disp[keep]/dt1.0$mean[keep]), pch=".", col="red")
+```
+
+
+## Compute TSNE on Superpoissonian genes
+This was a fun exercise just to see whether Seurat's elaborate algorithm
+(lognormalization, regressing out stuff, PCA and tSNE) can be replaced by a simple
+normalization and then directly computing tSNE. The result (not shown here) looks
+quite fine at first glance, but of course it's hard to say how well exactly we
+did without more detail. Perhaps at a later time point I'll try, but there really
+are enough good tools out there (plus UMAP is on the rise).
+```{r tsne_computation, eval = F}
+library(Rtsne)
+tsne_sqrt <- Rtsne::Rtsne(t(sqrt(normC[keep, ])))
+
+```
+
+
+# [Digression]: why squareroot-transformation?
+To compute distances, we choose superpoissonian genes, normalize them and then
+stabilize variance by taking the squareroot. This stabilization will not be perfect,
+so let's look at how good / bad it really is.
+
+```{r}
+mv_none <- do.call(rbind, apply(normC[keep, ],1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+mv_sqrt <- do.call(rbind, apply(sqrt(normC[keep, ]),1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+
+mv_log <- do.call(rbind, apply(log10(normC[keep, ] + min(as.vector(normC)[as.vector(normC) > 0])),1, function(gene) data.frame(mean=mean(gene), var=var(gene))))
+
+
+plot(mv_log$mean, mv_log$var)
+par(mfrow = c(2,2))
+plot(mv_none$mean, mv_none$var, log = "xy", main = "No variance stabilization [full]")
+plot(mv_none$mean, mv_none$var, log = "xy", main = "No variance stabilization [zoom]", xlim = c(1e-04, 1e-01))
+plot(mv_sqrt$mean, mv_sqrt$var, log="yx", main = "Squareroot  [full]")
+plot(mv_sqrt$mean, mv_sqrt$var, log="yx", main = "Squareroot  [zoom]", xlim = c(3e-03, 1e-01))
+par(mfrow = c(1,1))
+```
+Did we stabilize our variance using
+the squareroot transformation? It looks terribly linear in the
+log-log plot above, because there genes with very small means form the dreaded straight
+line. But these genes are of course anyways not informative and can't be stabilized.
+
+
+
+
+###  _ _ _ vVv _ _ _
+### Safepoint
+my session keeps crashing and I won't have it.
+```{r}
+save.image("~/savepoint/cbmc.RData")
+```
+
+```{r}
+load("~/savepoint/cbmc.RData")
+```
+
+
+
+###  _ _ _ n/\n _ _ _
+
+
+
+
+
+
+
+
+
+# Classify on ground truth
+
+If CD4 and CD8 are not ideal markers on the mRNA level to divide T cell subsets apart,
+the question is whether we can find other ones, or whether mRNA is just more
+ambiguous than protein. Can we distinguish CD4 and CD8 T cells at all?
+
+```{r}
+
+subsel <-  anno$groundtruth_CD4T | anno$groundtruth_CD8T
+
+
+dt_Tsubsets <- trainNB(rawC, anno$groundtruth_CD4T, anno$groundtruth_CD8T)
+s_Tsubsets <- NBNB(countmatrix = rawC[, subsel],
+                   dispersionTable = dt_Tsubsets)
+
+
+plot(colSums(rawC[, subsel]), s_Tsubsets,
+     pch = 20, cex=.3, col = rgb(0 + anno$groundtruth_CD4T[subsel], 0+anno$groundtruth_CD8T[subsel], 0), 
+     main = "Trained on Groundtruth\npos = CD4 T, neg = CD8 T"
+     , ylim = c(-500, 500)
+)
+
+     
+```
+
+```{r findmRNAmarkers_plotly, eval=F}
+p <- plotly::plot_ly( dt_Tsubsets, x= ~meanPos, y= ~ meanNeg,
+                 text = ~ paste0(gene))
+layout(p, xaxis = list(type = "log"),
+                                      yaxis = list(type = "log"))
+
+```
+
+```{r}
+sepscore <- function(dispersiontable) {
+  g  = dispersiontable$gene
+  mp = dispersiontable$meanPos 
+  mn = dispersiontable$meanNeg
+  dp = dispersiontable$dispPos
+  dn = dispersiontable$dispNeg
+  
+  varp = mp + dp * mp * mp
+  varn = mn + dn * mn * mn
+  
+  sepscore <- (mp - mn) / (sqrt(varp) + sqrt(varn))
+  names(sepscore) <- g
+ return(sepscore) 
+}
+
+
+dt_Tsubsets$sepScore <- sepscore(dt_Tsubsets)
+
+head(dt_Tsubsets[order(dt_Tsubsets$sepScore), ], n = 15)
+head(dt_Tsubsets[order(dt_Tsubsets$sepScore, decreasing = T), ], n = 15)
+```
+
+
+We found expected genes (CD4, CD8) and then also some new potiential markers!
+Also, we have proven that if the right cells are selected, we can tell CD4
+and CD8 cells apart by their transcriptome - so in theory our classifier is
+possible, we now have to see how well it can do in practice!
+
+
+
+
+
+# Classify naively 
+
+Let's pretend we do not have the protein-marker 'ground truth'. Then we do *not*
+know which cells are really CD4 and CD8 T cells. A trained biologist would then
+default to selecting cells clearly expressing CD3, and then subdivide these
+into CD4 and CD8 expressing cells, and use those as a positive classifier.
+
+
+Let's trust our MLE-fit of NBinomials for the moment. Then I expect to have eliminated
+genes with low Signal-to-noise / only-Poisson-variance and thus would think we
+can trust the Euclidean distance computed on these genes locally.
+
+Thus we can use even lowly expressed markers such as CD3E to identify cells by
+looking not only at each cell, but also this cell's closest neighbors. Here I 
+test this on 20 NNs and am able to classify > 90 % of the cells as T or not T.
+
+## Find all T cells
+```{r}
+cd3less_neighbors<- apply(NN, 1, function(n)  sum(rawC["CD3E", n] == 0) )
+
+breaks20 <- -0.5+0:21
+hist(cd3less_neighbors, main = 'sum(rawC["CD3E", n] == 0) )', breaks=breaks20)
+
+```
+
+To be sure, let's select rather stringent cut-offs to define our T cell
+training data:
+```{r}
+# find Ts and not Ts (let's be conservative)
+not_T_1    <- cd3less_neighbors > 18
+ is_T_1    <- cd3less_neighbors < 2
+
+```
+
+Classify on these - can we get all the T cell selection? Using only superpoissonian
+genes will be enough here (and faster!), as T cells are quite large a population,
+and distinct from all others. 
+
+```{r}
+dt_Tcells <- trainNB(rawC[keep, ], is_T_1, not_T_1)
+ s_isT_1 <- NBNB(rawC[keep, ], dt_Tcells)
+ 
+
+ 
+plot(colSums(rawC), s_isT_1, pch=20, cex=.1, 
+     ylim = c(-700, 500), xlim = c(0, 15000),
+     col = rgb(0 + is_T_1, 0 + not_T_1, 0), main = "NBNB Score (classified on CD3E neighborhood)" ); legend(
+x = 10000, y = 400, legend = c("is_T", "not_T"), pch=20, col = c("red", "green") )
+
+
+
+
+plot(colSums(rawC), s_isT_1, pch=20, cex=1, 
+     col = rgb(0.4 + .6*anno$groundtruth_CD4T, 0.4 + .6*anno$groundtruth_CD8T , 0.4 + .6*anno$groundtruth_notTatall),
+     main="'Ground truth' from CITEseq'"); abline(0,0); legend(
+       x=25000, y=400, legend=c("CITEseq_CD4", "CITEseq_CD8", "CITE_notTatall","unknown"), pch=20, col=c("red","green","blue","black"))
+
+
+plot(colSums(rawC), s_isT_1, pch=20, cex=1, 
+     ylim = c(-700, 500), xlim = c(0, 15000),
+     col = rgb(0.4 + .6*anno$groundtruth_CD4T, 0.4 + .6*anno$groundtruth_CD8T , 0.4 + .6*anno$groundtruth_notTatall),
+     main="'Ground truth' from CITEseq'"); abline(0,0); legend(
+       x=10000, y=400, legend=c("CITEseq_CD4", "CITEseq_CD8", "CITE_notTatall","unknown"), pch=20, col=c("red","green","blue","black"))
+
+```
+
+Looks like we got almost all of them, for now this is good enough. Note that
+the cut-off should not be at 0 but around 90 to get perfect results.
+```{r naiveClassif_Tcell}
+sf_1 <- colSums(rawC) / mean(colSums(rawC))
+plot(sf_1, s_isT_1, pch=20, cex=.4, ylim = c(-1500, 600), main = "Score > 90 :  I am a T cell") ; abline(90, 0)
+
+```
+
+
+# Subclassify CD4 and CD8 subsets
+
+### Euclidean distance neighborhoods - still useful?
+```{r}
+# Neighborhoods are not as clear, at this level of transcriptome similarity perhaps
+# euclidean distance breaks down.
+cd4less_neighbors_1 <- apply(NN[s_isT_1 > 90,], 1, function(n)  sum(rawC["CD4", n] == 0) )
+cd8less_neighbors_1 <- apply(NN[s_isT_1 > 90,], 1, function(n)  sum(rawC["CD8B", n] == 0))
+
+NN10 <- t(apply(as.matrix(d_sqrt), 1, function(row) head(order(row), n = 10)))
+cd4less_neighbors_1 <- apply(NN10[s_isT_1 > 90,], 1, function(n)  sum(rawC["CD4", n] == 0) )
+cd8less_neighbors_1 <- apply(NN10[s_isT_1 > 90,], 1, function(n)  sum(rawC["CD8B", n] == 0))
+
+
+hist(cd4less_neighbors_1)
+hist(cd8less_neighbors_1)
+```
+I am not sure how reliable these neighborhoods now are, and will instead choose
+the way to select cells below (basically `gating` on T cells first and then
+on CD4 and CD8 mRNA).
+
+
+
+
+### 36 positive cells
+```{r}
+
+plot(jitter(rawC["CD4", s_isT_1 > 90]), jitter(rawC["CD8B", s_isT_1 > 90]), pch=20, cex=.4)
+
+
+
+
+
+
+# Cells that are quite certainly CD4 / CD8 T cells:
+ptd_cd4T_1 <- s_isT_1 > 90 & rawC["CD4", ] >= 2 & rawC["CD8B", ] == 0
+ptd_cd8T_1 <- s_isT_1 > 90 & rawC["CD4", ] == 0 & rawC["CD8B", ] >= 2
+table(ptd_cd4T_1, ptd_cd8T_1)
+```
+We have selected CD4 and CD8 t cells with rather stringent cut-off (> 2 UMIs is
+asked rather a lot from the lowly expressed CD4), and thus get only few training
+cells. Let's see how this performs:
+
+```{r, cd4cd8_36cells_allgenes}
+# CD4 vs CD8 score:
+dt_subsets_1 <- trainNB(rawC, ptd_cd4T_1, ptd_cd8T_1, sf = sf_1)
+summary(dt_subsets_1)  # check there are no NAs, if there are do this:
+# notNA_1 <- apply(dt_subsets_1, 1, function(row) {sum(is.na(row)) == 0})
+s_subsets_1 <- NBNB(rawC[, s_isT_1 > 90], dt_subsets_1, sf = sf_1[s_isT_1 > 90])
+plot(sf_1[s_isT_1 > 90], s_subsets_1, pch =20, cex=.4,
+     col=rgb(0+ anno$groundtruth_CD4T[s_isT_1 > 90], 0 + anno$groundtruth_CD8T[s_isT_1 > 90], 0 + ptd_cd4T_1[s_isT_1 > 90])
+     , 
+     ylim=c(-800, 100),
+     main = "Training data:\n36x CD4 > 1 & CD8B == 0\n 122x CD4 == 0 & CD8B > 1") 
+legend(x= 1.5, y = 100, legend =c("CITEseq_CD4", "CITEseq_CD8","36pos", "36pos & CITEseq_CD4","unknown"),
+       pch=20, col=c("red","green","blue","magenta","black"))
+```
+We can see that separation is not great at all - we only pick apart the
+36 positive training data cells; so that's classical overfitting! I hypothesize that
+overfitting is mostly affecting genes with a non-prominent separation score,
+i.e. where there is no biological difference between CD4 and CD8 T cells except
+the noise inside the 36 + 122 training data and repeat the whole thing with
+the top genes only.
+
+
+### 36 positive cells; genes with highest separation score
+
+```{r fig.height=11, fig.width=9}
+dt_subsets_1$sepScore <- sepscore(dt_subsets_1)
+
+sepGenes <- c(
+         head(dt_subsets_1$gene[order(dt_subsets_1$sepScore) ], n = 20),
+         head(dt_subsets_1$gene[order(dt_subsets_1$sepScore, decreasing = T) ], n = 20)
+)
+
+sfs <- colSums(rawC) / mean(colSums(rawC))
+s_subsets_top40 <- NBNB(rawC[sepGenes, s_isT_1 > 90], dispersionTable = 
+                         dt_subsets_1[match(sepGenes, dt_subsets_1$gene), ],
+                       sf = sfs[s_isT_1 > 90])
+
+plot(sfs[s_isT_1 > 90], s_subsets_top40, pch=20, cex=.4,
+      col = rgb(0 + anno$groundtruth_CD4T[s_isT_1 > 90], 0 + anno$groundtruth_CD8T[s_isT_1 > 90],
+                0 + ptd_cd4T_1[s_isT_1 > 90] + ptd_cd8T_1[s_isT_1 > 90]),
+     main = "Classif. Genes: 40 highest separation Scores\n36x CD4 > 1 & CD8B == 0\n 122x CD4 == 0 & CD8B > 1") 
+legend(x= 1.8, y = 35, legend =c("CITEseq_CD4", "CITEseq_CD8","36pos / 122neg", "36pos &\nCITEseq_CD4", "122neg &\nCITEseq_CD8","unknown"),
+       pch=20, col=c("red","green","blue","magenta", "turquoise", "black"))
+```
+Amazing. The separation is almost complete between CD4 and CD8 cells, and that
+with only 36 CD4 and 122 CD8 T cells as training (and these are I think not 
+perfectly pure, either)! We take from this that Naive Bayes can be very powerful
+when tuned correctly and want to further follow up on how to do feature 
+selection (above the top 40 was rather arbitrary).
+
+### More cells do not help as much as selecting good features
+416 positive cells, all genes: does not help.
+
+
+```{r}
+ptd_cd4T_416 <- s_isT_1 > 90 & rawC["CD4", ] >= 1 & rawC["CD8B", ] == 0
+dt_subsets_416 <- trainNB(rawC, ptd_cd4T_416, ptd_cd8T_1, sf = sf_1)
+summary(dt_subsets_416)
+notNA_416 <- apply(dt_subsets_416, 1, function(row) {sum(is.na(row)) == 0})
+s_416<- NBNB(rawC[notNA_416, s_isT_1 > 90], dt_subsets_416[notNA_416, ], sf = sf_1[s_isT_1 > 90])
+
+plot(sf_1[s_isT_1 > 90], s_416, pch = 20, cex=.4, 
+      col=rgb(0+ anno$groundtruth_CD4T[s_isT_1 > 90], 0 + anno$groundtruth_CD8T[s_isT_1 > 90], 0 + ptd_cd8T_1[s_isT_1 > 90]),
+      xlim = c(0, 4),
+      main = "Training data:\n416x CD4 > 0 & CD8B == 0\n 122x CD4 == 0 & CD8B > 1")
+legend(x= 2.5, y = 570, legend =c("CITEseq_CD4", "CITEseq_CD8","122neg", "122neg &\nCITEseq_CD8","unknown"),
+       pch=20, col=c("red","green","blue","turquoise","black"))
+
+
+ 
+
+```
+We see that again we're overfitting the training data, taking more cells
+did not help with this issue.
+
+### Which genes are holding us back?
+
+```{r}
+dt_subsets_416$sepScore <- sepscore(dt_subsets_416)
+
+sepGenes_416 <- c(
+         head(dt_subsets_416$gene[order(dt_subsets_416$sepScore) ], n = 20),
+         head(dt_subsets_416$gene[order(dt_subsets_416$sepScore, decreasing = T) ], n = 20)
+)
+
+s_cd4cd8_top40 <- NBNB(rawC[sepGenes_416, s_isT_1 > 90], dispersionTable = 
+                         dt_subsets_416[match(sepGenes_416, dt_subsets_416$gene), ],
+                       sf = sfs[s_isT_1 > 90])
+
+plot(sfs[s_isT_1 > 90], s_cd4cd8_top40, pch=20, cex=.4, col =
+      rgb(0+ anno$groundtruth_CD4T[s_isT_1 > 90],
+          0 + anno$groundtruth_CD8T[s_isT_1 > 90],
+          0 + ptd_cd4T_416[s_isT_1 > 90] + ptd_cd8T_1[s_isT_1 > 90]),
+     main = "Classif. Genes: 40 highest separation Scores\n416x CD4 > 0 & CD8B == 0\n 122x CD4 == 0 & CD8B > 1")
+legend(x= 2, y = 50, legend =c("CITEseq_CD4", "CITEseq_CD8","36pos / 122neg", "36pos &\nCITEseq_CD4", "122neg &\nCITEseq_CD8","unknown"),
+       pch=20, col=c("red","green","blue","magenta", "turquoise", "black"))
+
+```
+
+It seems to me that the separation between CD4 and CD8 T cells is now centered
+at zero. Taking more cells I would expect makes it more robust.
+
+
+
+
+
+
+
+# End of Script
+```{r}
+session_info()
+```
+
