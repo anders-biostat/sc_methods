@@ -651,6 +651,16 @@ fit <- cv.glmnet( x = t(A.4[Aselect, c(training_A, training_B)]),
                 lambda = my_lambdas
                 )
 
+
+pr <- predict(fit, newx = t(A.4[Aselect, ]), s = "lambda.1se",
+              type = "response")
+
+ggplot(data.frame(Prob_CD4 = pr[, 1], groundtruth)) + geom_jitter(aes(x=groundtruth, Prob_CD4))
+
+
+plot(colSums(rawT), pr[, 1], pch = 20, cex = .4, col = 1 + (groundtruth == "CD4"),
+     ylab = "Response",
+     main = "ElasticNet (.5) with 50 training cells each\nCiteSeq groundtruth: CD4 in red, CD8 in black")
 ```
 
 
