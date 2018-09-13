@@ -1,0 +1,246 @@
+---
+title: "Find Highly Variable Genes"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+
+
+
+On the CITEseq data, we play around with HVGs (highly variable genes), i.e.
+superpoissonian genes.
+
+```{r loadCITE}
+file <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/data/GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz"
+rawC <- as.matrix(read.csv(gzfile(file), row.names = 1))
+
+is_mouse <- colSums(rawC[grepl("MOUSE", rownames(rawC)),]) / colSums(rawC) > .1
+rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
+
+
+normC <- apply(rawC, 2, function(c) c/sum(c))
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
+abline(h = 1 / mean(colSums(rawC)))
+abline(h = 1/ exp(mean(log(colSums(rawC)))))
+```
+
+
+We simulate and display Poisson noise:
+```{r poissNoise}
+
+
+
+
+poisGenes <- function(rawCounts, sizefactors){
+  
+t(
+  apply(rawCounts, 1, function(gene) {
+  simGene <- rpois(ncol(rawCounts), lambda = mean(gene / sizefactors) * sizefactors)
+ return( c(mean = mean(simGene / sizefactors),
+           var  = var(simGene / sizefactors))) 
+}))
+}
+
+ 
+
+```
+
+
+
+
+
+# Geometric Mean of Pairwise Ratios
+
+
+
+
+
+
+Play data
+```{r}
+tc <- matrix(c(0,2,1,0, 1,0,3,0,3,3,0,0), ncol = 3)
+```
+
+
+Below function is adopted from the following source:
+
+  * Title: Geometric Mean of Pairwise Ratios (GMPR) for Microbiome Sequencing data normalization
+  * Version: 0.1
+  * Authors: Jun Chen (chen.jun2@mayo.edu)
+  * Date: 2017/02/07
+  * Description: The function calculates the normalizing factors for microbiome sequencing data or generally zeroinflated sequencing data. 
+  * The size factors can be used as offsets in count-based regression models or as devisors to produce normalized data
+
+Felix tweaked it so support parallelization.
+
+```{r}
+
+pairMedian <- function(cell1, cell2) {
+  compare <- cell1 != 0 & cell2 != 0
+  median(cell1[compare] / cell2[compare])
+}
+
+cell1 <- 13
+cell2 <- 27
+
+top5000 <- names(sort(rowMeans(rawC), decreasing =  TRUE)[1:5000])
+topC <- rawC[top5000, ]
+
+
+use_cells <- sample(1:ncol(rawC), ncol(rawC))
+
+library(pbmcapply)
+
+
+sfs <- pbmclapply(use_cells, function(cell1) {  
+  if(cell1 %% 100 == 0) { print(cell1)}
+exp(mean(log(sapply(1:ncol(topC), function(cell2) {
+ nz <- topC[, cell1] != 0 & topC[, cell2] != 0
+ median(topC[nz, cell1] / topC[nz, cell2])
+ 
+}))))
+})
+# save(sfs, file = "~/savepoint/citeseq_gmpr_sizefactors.RData")
+sfs <- as.numeric(sfs); names(sfs) <- colnames(rawC[, use_cells])
+
+
+
+library(scran)
+sce <- SingleCellExperiment(list(counts=rawC[, use_cells]))
+clusters <- quickCluster(sce, min.size = 100)
+sce <- computeSumFactors(sce, cluster = clusters)
+ # sizeFactors(sce)
+```
+
+
+
+Simple library size normalization:
+```{r}
+
+cs <- colSums(rawC)
+cs2 <- apply(rawC, 2, function(x) sum(sample(x, replace = T)))
+
+
+poiss <- t(
+  apply(rawC, 1, function(gene) {
+  rpois(ncol(rawC), lambda = mean(gene / cs) * cs2)
+
+  }))
+
+
+normC <- t( t(rawC) / cs)
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
+
+normP <- t( t(poiss) / colSums(rawC))
+allMP <- apply(normP, 1, mean)
+allVP <- apply(normP, 1, var)
+points(allMP, allVP / allMP, col = "red", pch = 20, cex=.1)
+```
+
+Generative model:
+```{r}
+# homogeneous cells still vary in gene expression, probably gaussian but I'll
+# do poisson for no reason:
+gene_RNA <- rpois(8000, lambda = 300)
+# possible efficiencies of reverse transcription:
+rte <- seq(0.13, 0.17, length.out = length(gene))
+gene_cDNA <- rbinom(length(gene_RNA), size = gene_RNA, prob = sample(rte, replace = T))
+mean(gene_cDNA); var(gene_cDNA)
+```
+I note that variation is larger than predicted by a poisson from the mean.
+
+
+
+```{r}
+x <- rawC["HUMAN_CCL3", ]
+
+fitNB(x, sf = colSums(rawC))
+ mean(x/colSums(rawC)); var(x/colSums(rawC))
+cs <- colSums(rawC)
+
+# Notes on the next chunk:
+# above 1 means superpoissonian. Without normalizing, the poisson variance
+# would be the equal to lambda, this lambda depends on the cell's size factors
+# obviously. 
+# we use bootstrapping 
+# to find genes that certainly lie above 1.
+bs_1 <- apply(rawC, 1, function(x) {
+  nx <- x / cs
+  min(replicate(100, {
+    nxbs <- sample(nx, replace = T)
+    var(nxbs) / mean(nxbs) 
+  })/ mean(1 / cs))
+  
+})
+
+bs_2 <- apply(rawC, 1, function(x) {
+  nx <- x / cs
+  min(replicate(100, {
+    nxbs <- sample(nx, replace = T)
+    var(nxbs) / mean(nxbs) 
+  })/ mean(1 / cs))
+  
+})
+
+```
+
+
+
+
+Geometric mean with pairwise ratios (GMPR):
+```{r}
+poiss <- poisGenes(rawC[, use_cells], sizefactors = sfs)
+
+normC <- t( t(rawC[, use_cells]) / sfs)
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040",  ylim = c(3e-2, 1e3))
+points(poiss[,1], poiss[,2]/poiss[,1], col = "red", pch = 20, cex=.1)
+```
+
+With scran pooling:
+```{r}
+poiss <- poisGenes(rawC[, use_cells], sizefactors = sizeFactors(sce))
+
+normC <- t( t(rawC[, use_cells]) / sizeFactors(sce))
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
+points(poiss[,1], poiss[,2]/poiss[,1], col = "red", pch = 20, cex=.1)
+```
+
+
+To Do:
+
+plot allV / allM for libsize and for GMPR and see if it has a tendency to be lower.
+
+
+
+
+```{r}
+foo <- t(sapply(sample(1:ncol(rawC), ncol(rawC)/10), function(cell) { 
+ s <- replicate(n = 100, sum(rawC[sample.int(nrow(rawC), replace = T), cell]))
+ return(data.frame(colSum = sum(rawC[, cell]), mean = mean(s), var = var(s)))
+}))
+
+# colSums estimate appears to be normally distributed:
+qqnorm(foo$s[1:100])
+# let's find mu and sd for a bunch of cells, fit the relationship and then
+# draft 'noisy sizefactors' when simulating poisson background
+
+sort(debby[debby > quantile(debby[debby != 0], .9)])
+sort(henry[henry > quantile(henry[henry != 0], .9)])
+
+```
+
