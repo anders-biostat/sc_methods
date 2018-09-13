@@ -24,106 +24,22 @@ rawC <- as.matrix(read.csv(gzfile(file), row.names = 1))
 is_mouse <- colSums(rawC[grepl("MOUSE", rownames(rawC)),]) / colSums(rawC) > .1
 rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
 
-
-normC <- apply(rawC, 2, function(c) c/sum(c))
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
-abline(h = 1 / mean(colSums(rawC)))
-abline(h = 1/ exp(mean(log(colSums(rawC)))))
 ```
-
-
-We simulate and display Poisson noise:
-```{r poissNoise}
-
-
-
-
-poisGenes <- function(rawCounts, sizefactors){
-  
-t(
-  apply(rawCounts, 1, function(gene) {
-  simGene <- rpois(ncol(rawCounts), lambda = mean(gene / sizefactors) * sizefactors)
- return( c(mean = mean(simGene / sizefactors),
-           var  = var(simGene / sizefactors))) 
-}))
-}
 
  
-
-```
-
-
-
-
-
-# Geometric Mean of Pairwise Ratios
-
-
-
-
-
-
-Play data
-```{r}
-tc <- matrix(c(0,2,1,0, 1,0,3,0,3,3,0,0), ncol = 3)
-```
-
-
-Below function is adopted from the following source:
-
-  * Title: Geometric Mean of Pairwise Ratios (GMPR) for Microbiome Sequencing data normalization
-  * Version: 0.1
-  * Authors: Jun Chen (chen.jun2@mayo.edu)
-  * Date: 2017/02/07
-  * Description: The function calculates the normalizing factors for microbiome sequencing data or generally zeroinflated sequencing data. 
-  * The size factors can be used as offsets in count-based regression models or as devisors to produce normalized data
-
-Felix tweaked it so support parallelization.
-
-```{r}
-
-pairMedian <- function(cell1, cell2) {
-  compare <- cell1 != 0 & cell2 != 0
-  median(cell1[compare] / cell2[compare])
-}
-
-cell1 <- 13
-cell2 <- 27
-
-top5000 <- names(sort(rowMeans(rawC), decreasing =  TRUE)[1:5000])
-topC <- rawC[top5000, ]
-
-
-use_cells <- sample(1:ncol(rawC), ncol(rawC))
-
-library(pbmcapply)
-
-
-sfs <- pbmclapply(use_cells, function(cell1) {  
-  if(cell1 %% 100 == 0) { print(cell1)}
-exp(mean(log(sapply(1:ncol(topC), function(cell2) {
- nz <- topC[, cell1] != 0 & topC[, cell2] != 0
- median(topC[nz, cell1] / topC[nz, cell2])
  
-}))))
-})
-# save(sfs, file = "~/savepoint/citeseq_gmpr_sizefactors.RData")
-sfs <- as.numeric(sfs); names(sfs) <- colnames(rawC[, use_cells])
+ Finding (not shown): for erythrocytes, more than half of all counts are one
+ or two genes, usually hemoglobin chains. Therefore, estimating SE of colSums for
+ these cells with bootstrapping results in huge variation, depending on whether
+ the bootstrap run picked one of these highest genes or not.
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 
-
-
-library(scran)
-sce <- SingleCellExperiment(list(counts=rawC[, use_cells]))
-clusters <- quickCluster(sce, min.size = 100)
-sce <- computeSumFactors(sce, cluster = clusters)
- # sizeFactors(sce)
-```
-
-
-
-Simple library size normalization:
 ```{r}
 
 cs <- colSums(rawC)
@@ -198,6 +114,71 @@ bs_2 <- apply(rawC, 1, function(x) {
 
 
 
+
+
+
+#[deprecated] Other size-factor methods
+
+I have also tried GMPR and scran-pooling, and here are some code chunks from this.
+The result, however, remained the same: some points with moderately high means
+are located just above the poisson-only genes. We conclude from this and after some
+discussion the following:
+for most genes, biological variation is smaller than poisson noise so they're 
+completely inside the 'poisson-only cloud' of genes; other genes are clearly
+HVGs, and then a bunch of genes might have some biological variation but not 
+enough to emancipate over the poisson noise. Initially we thought inprecise
+size-factor estimation would contribute the additional observed noise, in which case
+more precise size factors would be helpful. Above we've played around quite a bit
+with this, though, and do not think so any more.
+
+
+Below GMPR function is adopted from the following source:
+
+  * Title: Geometric Mean of Pairwise Ratios (GMPR) for Microbiome Sequencing data normalization
+  * Version: 0.1
+  * Authors: Jun Chen (chen.jun2@mayo.edu)
+  * Date: 2017/02/07
+  * Description: The function calculates the normalizing factors for microbiome sequencing data or generally zeroinflated sequencing data. 
+  * The size factors can be used as offsets in count-based regression models or as devisors to produce normalized data
+
+Felix tweaked it so support parallelization.
+
+```{r, eval = }
+
+top5000 <- names(sort(rowMeans(rawC), decreasing =  TRUE)[1:5000])
+topC <- rawC[top5000, ]
+
+
+use_cells <- sample(1:ncol(rawC), ncol(rawC))
+
+library(pbmcapply)
+
+
+sfs <- pbmclapply(use_cells, function(cell1) {  
+  if(cell1 %% 100 == 0) { print(cell1)}
+exp(mean(log(sapply(1:ncol(topC), function(cell2) {
+ nz <- topC[, cell1] != 0 & topC[, cell2] != 0
+ median(topC[nz, cell1] / topC[nz, cell2])
+ 
+}))))
+})
+# save(sfs, file = "~/savepoint/citeseq_gmpr_sizefactors.RData")
+sfs <- as.numeric(sfs); names(sfs) <- colnames(rawC[, use_cells])
+
+
+
+library(scran)
+sce <- SingleCellExperiment(list(counts=rawC[, use_cells]))
+clusters <- quickCluster(sce, min.size = 100)
+sce <- computeSumFactors(sce, cluster = clusters)
+ # sizeFactors(sce)
+```
+
+
+
+
+
+
 Geometric mean with pairwise ratios (GMPR):
 ```{r}
 poiss <- poisGenes(rawC[, use_cells], sizefactors = sfs)
@@ -220,27 +201,4 @@ plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
 points(poiss[,1], poiss[,2]/poiss[,1], col = "red", pch = 20, cex=.1)
 ```
 
-
-To Do:
-
-plot allV / allM for libsize and for GMPR and see if it has a tendency to be lower.
-
-
-
-
-```{r}
-foo <- t(sapply(sample(1:ncol(rawC), ncol(rawC)/10), function(cell) { 
- s <- replicate(n = 100, sum(rawC[sample.int(nrow(rawC), replace = T), cell]))
- return(data.frame(colSum = sum(rawC[, cell]), mean = mean(s), var = var(s)))
-}))
-
-# colSums estimate appears to be normally distributed:
-qqnorm(foo$s[1:100])
-# let's find mu and sd for a bunch of cells, fit the relationship and then
-# draft 'noisy sizefactors' when simulating poisson background
-
-sort(debby[debby > quantile(debby[debby != 0], .9)])
-sort(henry[henry > quantile(henry[henry != 0], .9)])
-
-```
 
