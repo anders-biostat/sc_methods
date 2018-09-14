@@ -1,0 +1,55 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+# Load data
+On the CITEseq data, we play around with HVGs (highly variable genes), i.e.
+superpoissonian genes.
+
+```{r loadCITE}
+file <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/data/GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz"
+rawC <- as.matrix(read.csv(gzfile(file), row.names = 1))
+
+is_mouse <- colSums(rawC[grepl("MOUSE", rownames(rawC)),]) / colSums(rawC) > .1
+rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
+
+```
+
+
+
+
+
+```{r}
+
+cs <- colSums(rawC)
+# this is a single bootstrap run to get the colSum estimate a bit imprecise,
+# which simulates additional noise introduced by our normalization:
+cs2 <- apply(rawC, 2, function(x) sum(sample(x, replace = T)))
+
+
+poiss <- t(
+  apply(rawC, 1, function(gene) {
+  rpois(ncol(rawC), lambda = mean(gene / cs) * cs2)
+
+  }))
+
+
+normC <- t( t(rawC) / cs)
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+
+normP <- t( t(poiss) / colSums(rawC))
+allMP <- apply(normP, 1, mean)
+allVP <- apply(normP, 1, var)
+
+# VMR
+plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
+points(allMP, allVP / allMP, col = "red", pch = 20, cex=.1)
+
+# V over M:
+plot(allM, allV, log = "xy", pch = 20, cex = .1, col = "#00000040")
+points(allMP, allVP, col ="red", pch = 20, cex=.1)
+```
+
