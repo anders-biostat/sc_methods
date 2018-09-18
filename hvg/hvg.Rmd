@@ -47,9 +47,115 @@ allV <- apply(normC, 1, var)
 pCounts <- t(sapply(allM, function(mu) rpois(ncol(rawC), lambda = mu * cs)))
 rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
 colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+
+pCounts_small <- Matrix(
+  pCounts[sample(1:nrow(pCounts), 8000), sample(1:ncol(pCounts), 1000)], sparse=T)
+rawC_small <- Matrix(
+  rawC[sample(1:nrow(rawC), 8000), sample(1:ncol(rawC), 1000)], sparse=T)
 ```
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Seurat's means and disps
+
+FindVariableGenes by default uses ExpMean and LogVMR, which effectively do this
+with the lognormalized values x:
+
+```{r}
+x  <- s@data["poisson_1305", ]
+expMean <-  log(
+              x = mean(x = exp(x = x) - 1) + 1 )
+
+disp    <-  log(
+              x = var(x = exp(x = x) - 1) / mean(x = exp(x = x) - 1) )
+
+
+
+xf <- pCounts["poisson_1305", ]  / cs 
+
+```
+
+I find this worrying.
+
+
+# Seurat on poisson genes
+
+```{r}
+library(Seurat)
+
+s <- CreateSeuratObject(pCounts)
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+length(s@var.genes)
+```
+Seurat finds 600 HVGs where there is no biological information at all.
+```{r}
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+s <- JackStraw(object = s, num.replicate = 100, display.progress = FALSE)
+JackStrawPlot(object =s, PCs = 1:12)
+```
+```{r}
+s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:7, 
+    resolution = 0.6, print.output = 0, save.SNN = TRUE)
+s <- RunTSNE(object = s, dims.use = 1:7, do.fast = TRUE)
+TSNEPlot(s)
+```
+
+# Monocle on Poisson genes
+
+```{r}
+library(monocle)
+pd <- new("AnnotatedDataFrame", data = data.frame(
+  cellID = colnames(pCounts_small),
+  row.names = colnames(pCounts_small)))
+fd <- new("AnnotatedDataFrame",
+          data.frame(gene_short_name= rownames(pCounts_small),
+                 row.names=rownames(pCounts_small)))
+cds_p <- newCellDataSet(Matrix(pCounts_small, sparse = T), phenoData = pd, featureData = fd,
+                      expressionFamily = negbinomial.size())
+
+pd <- new("AnnotatedDataFrame", data = data.frame(
+  cellID = colnames(rawC_small),
+  row.names = colnames(rawC_small)))
+fd <- new("AnnotatedDataFrame",
+          data.frame(gene_short_name= rownames(rawC_small), 
+                 row.names=rownames(rawC_small)))
+cds  <- newCellDataSet(Matrix(rawC_small, sparse = T), phenoData = pd, featureData = fd,
+                      expressionFamily = negbinomial.size())
+
+
+
+
+cds <- estimateSizeFactors(cds); cds <- estimateDispersions(cds)
+cds_p <- estimateSizeFactors(cds_p); cds_p <- estimateDispersions(cds_p)
+disp_table <- dispersionTable(cds)
+disp_table_p <- dispersionTable(cds_p)
+
+
+plot(disp_table$mean_expression, disp_table$dispersion_empirical, log="xy",
+     pch=20, cex=.3, xlab = "Mean Expression", ylab="Empirical dispersion",
+     col = "#00000090", # transparent black
+     main="Monocle's dispersion estimates\nRed: simulated poisson genes")
+points(disp_table_p$mean_expression, disp_table_p$dispersion_empirical, pch = 20, cex=.3, col="#ff000090")
+```
+
+We see that monocle could gain a lot by simply modelling poisson noise and
+plotting it into their dispersion plot.
 
 # [code chunks]
 
