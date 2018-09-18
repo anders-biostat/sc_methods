@@ -12,12 +12,6 @@ output:
 ---
 
 
-# Script Version overview
-
-We played around a lot, and this script summarizes most of it in useless detail.
-I include all of this to knit it once into a future reference, and then drastically
-will clean up this script to make me productive and focused.
-
 
 
 
@@ -38,174 +32,34 @@ rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
 
 
 
-
- 
- 
-# VMR to find HVGs
-Simon proved that the variance-over-mean ratio (VMR) is an excellent measurement
-to find superpoissonian genes, and that it can be computed on counts
-(counts = rawCounts / colSums).
-
-The beauty is that Poissonian Variance is a horizontal line when we plot VMR over 
-the mean (log-log axis), so selecting superpoissonian genes (HVGs) is very
-straight forward.
-
-Here, we create the plot and simulate Poisson noise, thus the HVGs become
-immediately clear as genes clearly above Poisson variance:
+# ColSums, Gene Means and Poisson raw counts
 
 ```{r}
 cs <- colSums(rawC)
+
+# estimate each gene's true mean by normalizing with library size first:
+normC <- t( t(rawC) / cs)
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+
+
 # simulate poisson raw counts for our data:
-poiss <- t(
-  apply(rawC, 1, function(gene) {
-    rpois(ncol(rawC), lambda = mean(gene / cs) * cs)
-  })
-)
+pCounts <- t(sapply(allM, function(mu) rpois(ncol(rawC), lambda = mu * cs)))
+rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
+colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+```
 
 
-normC <- t( t(rawC) / cs)
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
 
+# [code chunks]
+
+```{r}
 normP <- t( t(poiss) / colSums(rawC))
 allMP <- apply(normP, 1, mean)
 allVP <- apply(normP, 1, var)
-
-
 plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
 points(allMP, allVP / allMP, col = "red", pch = 20, cex=.1)
 ```
-The y-axis is the variance divided by the mean, also called the
-VMR (variance-over-mean ratio). Seurat uses the same thing, I believe,
-but *after* log-transformation, creating all kinds of problems. The point 
-we want to make is that it is much better, and also deeply rootet in statistical
-theory (see Simon's handwritten notes that he'll write down one of these days)
-to compute variance and mean before log transformation and then transform
-these.
-
-
-# No noise from size-factor inaccuracies
-Finding: inflating poisson noise by deliberately mispicking size factors
-a bit seems insignificant. We had thought this might cause the red poisson cloud
-to swallow the black cloud completely so that only clear outliers remain outside,
-but it didn't. See also [deprecated]-section below (if it's not deleted yet).
-```{r}
-
-cs <- colSums(rawC)
-# this is a single bootstrap run to get the colSum estimate a bit imprecise,
-# which simulates additional noise introduced by our normalization:
-cs2 <- apply(rawC, 2, function(x) sum(sample(x, replace = T)))
-
-
-poiss <- t(
-  apply(rawC, 1, function(gene) {
-  rpois(ncol(rawC), lambda = mean(gene / cs) * cs2)
-
-  }))
-
-
-normC <- t( t(rawC) / cs)
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
-
-normP <- t( t(poiss) / colSums(rawC))
-allMP <- apply(normP, 1, mean)
-allVP <- apply(normP, 1, var)
-points(allMP, allVP / allMP, col = "red", pch = 20, cex=.1)
-```
-As we can see, the poisson variance does not inflate much, size factors don't 
-seem to play a critical role here.
-We have also tried scran-pooling and Geometric Mean via pairwise ratios (GMPR, 
-from a microbiome paper) and not found important differences. Surprisingly,
-simply using the colSums seems to work quite well for simulating meaningful
-poisson noise.
-
-
-
- 
- 
-# Generative model for scRNAseq counts 
-
-The black dots form a dense cloud plus some outliers, the latter are clearly
-HVGs. The majority of the black dense cloud is congruent with the red dots, showing
-these genes show no variance above poisson noise. At expression means of 1e-04, 
-however, the black cloud clearly sticks out of the black cloud, showing a 
-systematic overdispersion of some genes. We were discussing what these genes
-might mean. **Explaination 1:** it could be biologically meaningful variation, that is only slightly
-larger than poisson noise. With larger means Poisson noise reduces, which could
-explain why the black cloud leaves the red one at higher means, not at very small 
-ones.
-**Explanation 2:** some technical effect of scRNAseq results in inflated noise
-that exceeds Poisson. The following small snippet shows my idea of how differences
-in reaction efficiency could lead to exactly this phenomenon:
-```{r}
-# homogeneous cells still vary in gene expression, probably gaussian but I'll
-# do poisson for no reason:
-gene_RNA <- rpois(8000, lambda = 300)
-# efficiencies of reverse transcription for a given cell might lie somewhere here:
-rte <- seq(0.13, 0.17, length.out = length(gene_RNA))
-# we now apply the randomly selected reaction efficiency to the actual mRNA levels:
-gene_cDNA <- rbinom(length(gene_RNA), size = gene_RNA, prob = sample(rte, replace = T))
-mean(gene_cDNA); var(gene_cDNA)
-```
-Poisson variance would be equal to the mean, here it is larger than the mean.
-This probably comes from the variation in the reaction efficiencies and should
-not be surprising, not sure if this is helpful. Just wanted to pin down that
-thought, isn't that a simple mechanism for why we see systematically elevated
-variances?
-
-
-
-# Erythrocytes
- Finding (not shown): for erythrocytes, more than half of all counts are one
- or two genes, usually hemoglobin chains. Therefore, estimating SE of colSums for
- these cells with bootstrapping results in huge variation, depending on whether
- the bootstrap run picked one of these highest genes or not.
- 
- We did colSum bootstrapping earlier (not shown) to measure the effect of inaccuracies
- on Poisson noise and found it negligible (see above; we also had more code but I deleted
- it).
-
-
-# Artifact lines
-Above plots show one very clear straight line on the very left of the plot,
-plus two or three parallel lines further to the right.
-This very left line roughly follows this equation when 
-$n_{cells\_nonzero}$ is 1 (found this by
-trial and error):
-
-$ var = \frac{n_{cells\_total}}{n_{cells\_nonzero}} \  \mu^2 $
-
-and marks genes where exactly 1 cell has exactly 1 UMI count.
-The position along the line depends on the cell's library size by which we normalize.
-Somewhat less visible, there are parallel lines further to the right, and these
-mark genes where 2 cells have 1 UMI - they are 'noisy' lines because the two
-cells of course have different sizefactors.
-Quick illustration:
-```{r}
-is_na <-  is.na(allVP/allMP) | is.na(allMP)
- x <- log(allMP[!is_na])
- y <- log(allVP[!is_na] / allMP[!is_na])
-
-
-sapply(1:4, function(ones) {
-  # exceptional counts:
-  ec <- c(rep(1, ones), rep(0, ncol(poiss)-1))
-  # no matter by which colsum we normalize, the ratio ov 
-  sapply(c(150, 2000, 10000), function(sizefactor) {
-      var(ec/sizefactor) / mean(ec/sizefactor) / mean(ec/sizefactor)
- })
-})
-
-
-tmp <- do.call(rbind, lapply(sapply(c(1:3,30), function(ones) {
-    # exceptional counts:
-    c(rep(1, ones), rep(0, ncol(poiss)-1)) }), function(counts) log(c(x=mean(counts/2000), y=var(counts/2000)/mean(counts/2000)))))
-plot(x,y, pch=".", main="Red dots from left to right:\nGenes detected with 1 UMI in 1, 2, 3 and 30 cells\n position amongst each 'line' depends on cell's sizefactor.")
-points(tmp[,1], tmp[,2], pch=20, col="red")
-```
-
 
 # Local quantile fit
 
@@ -254,137 +108,6 @@ The green line is at the moment a bit arbitrarily chosen as the median plus
 best.
 
 
-# [FYI sections]
-These things are interesting to look at in general, but not crucial in bringing
-the project forward.
-
-### Rotation
-Constantin and I play around with rotating the whole thing to make the
-artifact lines on the left vertical. His rationale is that the error visible
-in these lines would then be independent of the mean, i.e. vertical. I, on 
-the other hand, think this error is negligibly small in the moderate or high-abundance
-genes, as it stems from the library size bias when few cells are expressing a gene.
-The more cells express a gene, the more equally distributed their library sizes
-should be; hence I don't think it is a problem.
-```{r}
-X <- cbind(log(allM), log(allV))
-# reset to approximately the origin P(0|0):
-X[,1] = X[,1] + 20
-X[,2] = X[,2] + 30
-
-
-
-th <- 2.65 * pi/18
-rotMat <- matrix(c(cos(th), sin(th), -sin(th), cos(th)), nrow = 2)
-par(mfrow = c(2,1))
-plot(X, pch = 20, cex=.1)
-plot(t(rotMat %*% t(X)), pch = 20, cex=.1)
-```
-
-
-### Different ways to find Poisson limit
-
-With bins into which the genes are grouped (Simon strongly opposes):
-```{r}
-xrange <- log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_n <- 75
-
-bin_x <- exp(seq(xrange[1], xrange[2], length.out = bin_n))
-bin_d <- bin_x[2] - bin_x[1]
-
-foo <- t(sapply(bin_x, function(x) {
-  in_window <- allMP > (x - bin_d) & allMP < (x + bin_d)
-  return(c(mean = mean(allMP[in_window]), var = mean(allVP[in_window])))
-}))
-
-binstats <- data.frame()
-for(i in 1:length(bin_x)) {
-  lower <- ifelse(i == 1,
-                  bin_x[i],
-                  bin_x[i] - (bin_x[i] - bin_x[i-1])/2)
-  upper <- ifelse(i == length(bin_x),
-                  bin_x[i],
-                  bin_x[i] + (bin_x[i+1] - bin_x[i])/2)
-  in_window <- allMP > lower & allMP < upper
- binstats <- rbind(binstats, 
-                   data.frame(mean = mean(allMP[in_window]),
-                              var = mean(allVP[in_window]),
-                              q95 = quantile(allVP[in_window], .95)))
-}
-
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#11000040")
-points(allMP, allVP/allMP, col = "blue", pch=20, cex=.1)
-points(binstats$mean, binstats$q95 / binstats$mean, pch=20, col="blue")
-
-```
-
-With linear quantile regression (above we use local quantile regression, which
-basically fits a smoothed line and gets *much better* results than the linear one):
-```{r}
-library(quantreg)
-fit_l <- rq(log(allVP/allMP) ~ log(allMP), tau = .95)
-plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000040")
-points(log(allMP), log(allVP / allMP), pch=20, cex=.1, col = "red")
-abline(fit_l, col = "green")
-```
-
-
-Not sure what the idea here was - I think I fit the linear line and then compute
-some values for bins bin_x:
-```{r}
-fit <- rq(allVP/allMP ~ allMP, tau = .95)
-fit_x <- bin_x
-fit_y <- coef(fit)[1] + coef(fit)[2] * bin_x
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#11000040")
-points(fit_x, fit_y, pch=20, col = "red")
-
-
-```
- 
-
-
-
-
-# Neg. Binomial fit is off
-We had this code left over, and Simon keeps stressing that the NB fit is 
-way off (e.g. when we have two poisson distributions, one each for expressors
-and non-expressors, respectively).
-I haven't seen this as clear but agree that it must be true, so here is the 
-bare code plus some bootstrapping, not sure for what exactly.
-```{r, eval = F}
-x <- rawC["HUMAN_CCL3", ]
-
-fitNB(x, sf = colSums(rawC))
- mean(x/colSums(rawC)); var(x/colSums(rawC))
-cs <- colSums(rawC)
-
-# Notes on the next chunk:
-# above 1 means superpoissonian. Without normalizing, the poisson variance
-# would be the equal to lambda, this lambda depends on the cell's size factors
-# obviously. 
-# we use bootstrapping 
-# to find genes that certainly lie above 1.
-bs_1 <- apply(rawC, 1, function(x) {
-  nx <- x / cs
-  min(replicate(100, {
-    nxbs <- sample(nx, replace = T)
-    var(nxbs) / mean(nxbs) 
-  })/ mean(1 / cs))
-  
-})
-
-bs_2 <- apply(rawC, 1, function(x) {
-  nx <- x / cs
-  min(replicate(100, {
-    nxbs <- sample(nx, replace = T)
-    var(nxbs) / mean(nxbs) 
-  })/ mean(1 / cs))
-  
-})
-
-
-plot(bs_1, bs_2)
-```
 
 
 
@@ -392,89 +115,6 @@ plot(bs_1, bs_2)
 
 
 
-#[deprecated] Other size-factor methods
-
-I have also tried GMPR and scran-pooling, and here are some code chunks from this.
-The result, however, remained the same: some points with moderately high means
-are located just above the poisson-only genes. We conclude from this and after some
-discussion the following:
-for most genes, biological variation is smaller than poisson noise so they're 
-completely inside the 'poisson-only cloud' of genes; other genes are clearly
-HVGs, and then a bunch of genes might have some biological variation but not 
-enough to emancipate over the poisson noise. Initially we thought inprecise
-size-factor estimation would contribute the additional observed noise, in which case
-more precise size factors would be helpful. Above we've played around quite a bit
-with this, though, and do not think so any more.
-
-
-Below GMPR function is adopted from the following source:
-
-  * Title: Geometric Mean of Pairwise Ratios (GMPR) for Microbiome Sequencing data normalization
-  * Version: 0.1
-  * Authors: Jun Chen (chen.jun2@mayo.edu)
-  * Date: 2017/02/07
-  * Description: The function calculates the normalizing factors for microbiome sequencing data or generally zeroinflated sequencing data. 
-  * The size factors can be used as offsets in count-based regression models or as devisors to produce normalized data
-
-Felix tweaked it so support parallelization.
-
-```{r, eval = F}
-
-top5000 <- names(sort(rowMeans(rawC), decreasing =  TRUE)[1:5000])
-topC <- rawC[top5000, ]
-
-
-use_cells <- sample(1:ncol(rawC), ncol(rawC))
-
-library(pbmcapply)
-
-
-sfs <- pbmclapply(use_cells, function(cell1) {  
-  if(cell1 %% 100 == 0) { print(cell1)}
-exp(mean(log(sapply(1:ncol(topC), function(cell2) {
- nz <- topC[, cell1] != 0 & topC[, cell2] != 0
- median(topC[nz, cell1] / topC[nz, cell2])
- 
-}))))
-})
-# save(sfs, file = "~/savepoint/citeseq_gmpr_sizefactors.RData")
-sfs <- as.numeric(sfs); names(sfs) <- colnames(rawC[, use_cells])
-
-
-
-library(scran)
-sce <- SingleCellExperiment(list(counts=rawC[, use_cells]))
-clusters <- quickCluster(sce, min.size = 100)
-sce <- computeSumFactors(sce, cluster = clusters)
- # sizeFactors(sce)
-```
-
-
-
-
-
-
-Geometric mean with pairwise ratios (GMPR):
-```{r, eval = F}
-poiss <- poisGenes(rawC[, use_cells], sizefactors = sfs)
-
-normC <- t( t(rawC[, use_cells]) / sfs)
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040",  ylim = c(3e-2, 1e3))
-points(poiss[,1], poiss[,2]/poiss[,1], col = "red", pch = 20, cex=.1)
-```
-
-With scran pooling:
-```{r, eval = F}
-poiss <- poisGenes(rawC[, use_cells], sizefactors = sizeFactors(sce))
-
-normC <- t( t(rawC[, use_cells]) / sizeFactors(sce))
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
-points(poiss[,1], poiss[,2]/poiss[,1], col = "red", pch = 20, cex=.1)
-```
 
 # End of Script
 
