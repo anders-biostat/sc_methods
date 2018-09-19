@@ -22,17 +22,57 @@ On the CITEseq data, we play around with HVGs (highly variable genes), i.e.
 superpoissonian genes.
 
 ```{r loadCITE}
-file <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/data/GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz"
-rawC <- as.matrix(read.csv(gzfile(file), row.names = 1))
+citeDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/data/"
+rna_file <- paste0(citeDIR, "GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz")
+adt_file <- paste0(citeDIR, "GSE100866_CBMC_8K_13AB_10X-ADT_umi.csv.gz")
 
+rawC <- as.matrix(read.csv(gzfile(rna_file), row.names = 1))
+prot <- as.matrix(read.csv(gzfile(adt_file), row.names = 1))
+
+# exclude mouse cells:
 is_mouse <- colSums(rawC[grepl("MOUSE", rownames(rawC)),]) / colSums(rawC) > .1
 rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
+prot <- prot[, ! is_mouse]
+```
 
+# Protein data: normalization and Cell identities
+```{r}
+# simplifying Seurat's code to compute Centered Log Ratio (CLR):
+norm_prot <- apply(prot, 1, function(x) {
+  log1p( (x) /
+                          (exp(sum(log1p((x)[x > 0]), na.rm = TRUE)/length(x + 1))) ) })
+
+
+ # exclude NK and monos: 
+  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1)
+  
+# B and T cells:
+  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
+  has_B_markers <- norm_prot[, "CD19"] > 2  &  norm_prot[, "CD3"] < .5
+  has_T_markers <- norm_prot[, "CD19"] < 1.5  &  norm_prot[, "CD3"] > 1
+  plot(norm_prot[, "CD3"], norm_prot[, "CD19"], pch =20, col =
+         rgb(has_B_markers, has_T_markers, .7 *lin_neg),
+       main = "B and T cells in red and green\nCD56-CD11c- in blue\nPick cells with mixture colors")
+
+  
+    
+  isBcell <- has_B_markers & lin_neg
+  isTcell <- has_T_markers & lin_neg
+
+  
+  
+  has_CD4 <- norm_prot[, "CD4"] > 1  &  norm_prot[, "CD8"] < 1
+  has_CD8 <- norm_prot[, "CD4"] < .5  &  norm_prot[, "CD8"] > 3
+  isCD4Tcell <- isTcell & has_CD4
+  isCD8Tcell <- isTcell & has_CD8
+   
+  plot(norm_prot[, "CD4"], norm_prot[, "CD8"], pch=20, cex=.4,
+       col = rgb(0, isCD4Tcell, isCD8Tcell), 
+       main = "CD4 and CD8 T cells\nselected amongst T cells picked above")  
 ```
 
 
-
-# ColSums, Gene Means and Poisson raw counts
+# RNA data: ColSums and Poisson raw counts
 
 ```{r}
 cs <- colSums(rawC)
@@ -56,6 +96,129 @@ rawC_small <- Matrix(
 
 
 
+# Seurat distances
+```{r}
+library(Seurat)
+
+s <- CreateSeuratObject(rawC)
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F, do.plot = F)
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+
+library(parallelDist)
+ds <-parDist(s@dr$pca@cell.embeddings[,1:7], threads = 4)
+
+getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
+```
+
+B and T cells:
+```{r}
+ds_BT <- rbind(
+data.frame(Pair = "B_B", SeuratDist = getUpper(as.matrix(ds)[isBcell, isBcell])),
+data.frame(Pair = "B_T", SeuratDist = getUpper(as.matrix(ds)[isBcell, isTcell])),
+data.frame(Pair = "T_T", SeuratDist = getUpper(as.matrix(ds)[isTcell, isTcell])) )
+
+ggplot(ds_BT, aes(x = SeuratDist, stat(density), fill = Pair)) +
+  geom_histogram(alpha=.3, position = "identity")
+```
+CD4 and CD8 T cells:
+```{r}
+ds_Tsubsets <- rbind(
+data.frame(Pair = "CD4_CD4", SeuratDist = getUpper(as.matrix(ds)[isCD4Tcell, isCD4Tcell])),
+data.frame(Pair = "CD4_CD8", SeuratDist = getUpper(as.matrix(ds)[isCD4Tcell, isCD8Tcell])),
+data.frame(Pair = "CD8_CD8", SeuratDist = getUpper(as.matrix(ds)[isCD8Tcell, isCD8Tcell])) )
+
+ggplot(ds_Tsubsets, aes(x = SeuratDist, stat(density), fill = Pair)) +
+  geom_histogram(alpha=.3, position = "identity", binwidth = .5)
+```
+
+
+# Our distance
+
+Estimate poisson mean-var:
+```{r}
+normP <- t( t(pCounts) / colSums(rawC))
+allMP <- apply(normP, 1, mean)
+allVP <- apply(normP, 1, var)
+
+# Simon wants to filter out low-abundance genes. A very conservative cutoff is
+# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0.
+threshold <- mean(c(1/500,  rep(0, ncol(rawC)-1)))
+
+# filter genes:
+is_na <-  is.na(allVP/allMP) | is.na(allMP)
+ mu <- allMP[!is_na & allMP > threshold]
+vmr <- allVP[!is_na & allMP > threshold] / allMP[!is_na & allMP > threshold]
+
+```
+Local quantile fit:
+```{r}
+# ease of typing:
+x <- log(mu)
+y <- log(vmr)
+
+
+# going over all x takes too long:
+xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
+bin_n <- 75
+bin_x <- seq(xrange[1], xrange[2], length.out = bin_n)
+
+# Simon's local quantile fit (faster with `mm` matrix)
+library(quantreg)
+mm <- cbind( 1, x, x^2 )
+yfit <-
+ sapply( bin_x, function(xp) {
+   fit <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
+   fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
+   c(bin_x = xp,
+     q75= fit$coefficients %*% c( 1, xp, xp^2 ),
+     median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
+   })
+
+
+# arbitrarily choose 2x IQR and 10x IQR as possible cut-offs:
+IQR <- 2 * (yfit["q75", ] - yfit["median",])
+y_2 <-  yfit["median", ] + 2 * IQR
+y_10 <- yfit["median", ] + 10* IQR
+
+
+#######
+#######
+#######       To Do:
+#######       Below, I am not sure it should be x, instead perhaps
+#######       it would have to be allM, filtered with !is_na
+#######
+#######
+#######
+
+
+# interpolate to all points to get poisson limit for each gene:
+Lim10<- do.call(data.frame,
+  approx(bin_x, y_10, xout = x)
+)
+colnames(Lim10) <- c("log_mean", "log_VMR")
+# not necessary:
+#  Lim10 <- Lim10[! is.na(Lim10$log_mean) & ! is.na(Lim10$log_VMR) ,]
+Lim10 <- Lim10[order(Lim10[, "log_mean"]),]
+
+
+
+plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
+points(x, y, pch=20, cex=.1, col ="#ff000090")
+lines( bin_x, yfit["q75",], lwd = 2, col="orange" )
+lines( bin_x, yfit["median",], lwd = 2, col="magenta" )
+lines( Lim10[, "log_mean"], Lim10[, "log_VMR"], lwd = 2, col="blue")
+legend(x = min(log(allM[allM>0]), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue" ))
+
+hvg_10 <- rownames()
+
+
+
+# minimal example for approx function:
+approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
+
+```
 
 
 
@@ -157,61 +320,6 @@ points(disp_table_p$mean_expression, disp_table_p$dispersion_empirical, pch = 20
 We see that monocle could gain a lot by simply modelling poisson noise and
 plotting it into their dispersion plot.
 
-# [code chunks]
-
-```{r}
-normP <- t( t(poiss) / colSums(rawC))
-allMP <- apply(normP, 1, mean)
-allVP <- apply(normP, 1, var)
-plot(allM, allV/allM, log = "xy", pch = 20, cex=.1, col = "#00000040")
-points(allMP, allVP / allMP, col = "red", pch = 20, cex=.1)
-```
-
-# Local quantile fit
-
-To select HVGs, we want to know where the Poisson-regime ends. For this, we'll
-fit lines through the mean/median and the 90%-quantile using local quantile regression:
-```{r}
-# Simon wants to filter out low-abundance genes. A very conservative cutoff is
-# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0.
-threshold <- mean(c(1/500,  rep(0, ncol(rawC)-1)))
-
-# ease of typing (Poisson stats):
-is_na <-  is.na(allVP/allMP) | is.na(allMP)
- mu <- allMP[!is_na & allMP > threshold]
-vmr <- allVP[!is_na & allMP > threshold] / allMP[!is_na & allMP > threshold]
-
-x <- log(mu)
-y <- log(vmr)
-
-
- # going over all x takes too long:
-xrange <- log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_n <- 75
-bin_x <- seq(xrange[1], xrange[2], length.out = bin_n)
-
-
-library(quantreg)
-mm <- cbind( 1, x, x^2 )
-yfit <-
- sapply( bin_x, function(xp) {
-   fit <- rq.wfit( mm, y, .9, dnorm( x, mean=xp, sd=2 ) )
-   fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
-   c(   q90 = fit$coefficients %*% c( 1, xp, xp^2 ),
-     median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
-   })
-
-
-plot(log(allM), log(allV/allM), pch=20, cex=.1)
-points(x, y, pch=20, cex=.1, col ="red")
-lines( bin_x, yfit[1,], lwd = 2, col="orange" )
-lines( bin_x, yfit[2,], lwd = 2, col="magenta" )
-lines( bin_x, yfit["median", ] + 10*(yfit["q90", ] - yfit["median",]), lwd = 2, lty = "dashed", col="green" )
-
-```
-The green line is at the moment a bit arbitrarily chosen as the median plus
-10 times the difference from median to 90 quantile. We'll decide later what works
-best.
 
 
 
