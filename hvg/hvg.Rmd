@@ -1,0 +1,540 @@
+---
+title: "Find Highly Variable Genes"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: true
+    toc_float: true
+    self_contained: true
+    mathjax: default
+    code_download: true
+---
+
+
+
+
+# Load Packages
+
+```{r}
+library(pbmcapply) # parallelization
+library(quantreg)  # quantile regression with rq.wfit
+```
+
+
+
+# Load data
+On the CITEseq data, we play around with HVGs (highly variable genes), i.e.
+superpoissonian genes.
+
+```{r loadCITE}
+citeDIR <- "~/sds/sd17l002/p/scRNAseq_datasets/CITEseq_NatMethods_2017/data/"
+rna_file <- paste0(citeDIR, "GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz")
+adt_file <- paste0(citeDIR, "GSE100866_CBMC_8K_13AB_10X-ADT_umi.csv.gz")
+
+rawC <- as.matrix(read.csv(gzfile(rna_file), row.names = 1))
+prot <- as.matrix(read.csv(gzfile(adt_file), row.names = 1))
+
+# exclude mouse cells:
+is_mouse <- colSums(rawC[grepl("MOUSE", rownames(rawC)),]) / colSums(rawC) > .1
+rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
+prot <- prot[, ! is_mouse]
+```
+
+# Protein data: normalization and Cell identities
+```{r}
+# simplifying Seurat's code to compute Centered Log Ratio (CLR):
+norm_prot <- apply(prot, 1, function(x) {
+  log1p( (x) /
+                          (exp(sum(log1p((x)[x > 0]), na.rm = TRUE)/length(x + 1))) ) })
+
+
+ # exclude NK and monos: 
+  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1)
+  
+# B and T cells:
+  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
+  has_B_markers <- norm_prot[, "CD19"] > 2  &  norm_prot[, "CD3"] < .5
+  has_T_markers <- norm_prot[, "CD19"] < 1.5  &  norm_prot[, "CD3"] > 1
+  plot(norm_prot[, "CD3"], norm_prot[, "CD19"], pch =20, col =
+         rgb(has_B_markers, has_T_markers, .7 *lin_neg),
+       main = "B and T cells in red and green\nCD56-CD11c- in blue\nPick cells with mixture colors")
+
+  
+    
+  isBcell <- has_B_markers & lin_neg
+  isTcell <- has_T_markers & lin_neg
+
+  
+  
+  has_CD4 <- norm_prot[, "CD4"] > 1  &  norm_prot[, "CD8"] < 1
+  has_CD8 <- norm_prot[, "CD4"] < .5  &  norm_prot[, "CD8"] > 3
+  isCD4Tcell <- isTcell & has_CD4
+  isCD8Tcell <- isTcell & has_CD8
+   
+  plot(norm_prot[, "CD4"], norm_prot[, "CD8"], pch=20, cex=.4,
+       col = rgb(0, isCD4Tcell, isCD8Tcell), 
+       main = "CD4 and CD8 T cells\nselected amongst T cells picked above")  
+```
+
+
+# Custom (T cells)
+```{r}
+Ts <- isCD4Tcell | isCD8Tcell
+cs <- colSums(rawC[, Ts])
+
+# Simon wants to filter out low-abundance genes. A very conservative cutoff is
+# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0.
+threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
+
+```
+
+
+## RNA data: ColSums and Poisson raw counts
+```{r}
+
+# estimate each gene's true mean by normalizing with library size first:
+normC <- t( t(rawC[, Ts]) / cs)
+normC <- normC[rowMeans(normC) > threshold,]
+allM <- apply(normC, 1, mean)
+allV <- apply(normC, 1, var)
+
+
+# simulate poisson raw counts for our data:
+library(pbmcapply)
+nc <- ncol(rawC[, Ts])
+pCounts <- do.call(rbind,
+                   pbmclapply(allM, function(mu) {
+                     rpois(nc, lambda = mu * cs)}, mc.cores=4) )
+rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
+colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+
+pCounts_small <- Matrix::Matrix(
+  pCounts[sample(1:nrow(pCounts), 8000), sample(1:ncol(pCounts), 1000)], sparse=T)
+rawC_small <- Matrix::Matrix(
+  rawC[sample(1:nrow(rawC), 8000), sample(1:ncol(rawC), 1000)], sparse=T)
+```
+
+
+
+## Select HVGs
+
+Estimate poisson mean-var:
+```{r}
+normP <- t( t(pCounts) / cs)
+allMP <- apply(normP, 1, mean)
+allVP <- apply(normP, 1, var)
+```
+
+
+Local quantile fit:
+```{r}
+# ease of typing:
+x <- log(allMP)
+y <- log(allVP / allMP)
+
+
+# going over all x takes too long:
+xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
+bin_n <- 75
+bin_x <- seq(xrange[1], xrange[2], length.out = bin_n)
+
+# Simon's local quantile fit (faster with `mm` matrix)
+library(quantreg)
+mm <- cbind( 1, x, x^2 )
+yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
+  {
+      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
+      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
+      c(bin_x = xp,
+        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
+        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
+   } )  )
+
+
+
+# arbitrarily choose 2x IQR and 10x IQR as possible cut-offs:
+IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
+y_2 <-  yfit[, "median"] + 2 * IQR
+y_10 <- yfit[, "median"] + 10* IQR
+
+# interpolate to all points to get poisson limit for each gene:
+  Lim10<- do.call(data.frame,
+    approx(bin_x, y_10, xout = log(allM))
+  )
+  colnames(Lim10) <- c("log_mean", "log_VMR")
+
+# same for less stringent cutoff:
+  Lim2<- do.call(data.frame,
+    approx(bin_x, y_2, xout = log(allM))
+  )
+  colnames(Lim2) <- c("log_mean", "log_VMR")
+  
+# minimal example for approx function:
+# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
+
+
+plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
+points(x, y, pch=20, cex=.1, col ="#ff000090")
+lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
+lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
+lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
+lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
+#legend(x = min(log(allM[allM>0]), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue" ))
+```
+
+Pick HVGs:
+```{r}
+hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
+hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
+```
+
+
+
+
+```{r}
+# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+# load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+```
+
+
+
+
+
+
+
+
+
+
+# getHVG function
+```{r}
+## getHVG bug report:
+#
+#  This function is terrible coding practice; rewrite it completely!
+#
+#  rowMeans(rawC) and allM is redundant computation, that's uncritical but not elegant
+#
+#  everytime you run it, different genes get selected due to stochastic poisson.
+#  We'll probably find an analytic solution eventually anyways that should fix it.
+
+
+getHVG <- function(mat = rawC, nbin_qreg = 75) {
+##                                                        ##
+##   terrible hardcoded function, does the job for now.   ##
+##                                                        ##
+
+cs <- colSums(mat) 
+
+# Simon wants to filter out low-abundance genes. A very conservative cutoff is
+# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
+threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
+   # used by rawC
+   # also used by Poisson raw counts below
+
+# estimate each gene's true mean and var - for this we normalize with library size:
+  normC <- t( t(mat) / cs)
+  normC <- normC[rowMeans(normC) > threshold,]
+  allM <- apply(normC, 1, mean)
+  allV <- apply(normC, 1, var)
+
+
+# simulate poisson raw counts relevent to our data (i.e. using allM):
+  nc <- ncol(mat)
+  pCounts <- do.call(rbind,
+                     pbmclapply(allM, function(mu) {rpois(nc, lambda = mu * cs)},
+                                mc.cores=4) )
+  # superfluous, here because I used to punch these into Seurat:
+  rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
+  colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+
+# as with real counts:
+  normP <- t( t(pCounts) / cs)
+  allMP <- apply(normP, 1, mean)
+  allVP <- apply(normP, 1, var)
+  # x,y for ease of typing. threshold also prevents -Inf values, defensive progr.:
+  x <- log(allMP[allMP > threshold])
+  y <- log(allVP[allMP > threshold] / allMP[allMP > threshold])
+
+
+# going over all x takes long, so we fit the VMR-mean relationship in bins:
+xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
+bin_x <- seq(xrange[1], xrange[2], length.out = nbin_qreg)
+# random poisson by chance might not cover the extreme values:
+bin_x <- c(log(min(allM)), bin_x, log(max(allM)))
+
+# Simon's local quantile fit (faster using matrix notation, `mm`)
+mm <- cbind( Intercept = 1, X = x, X2 = x^2 )
+yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
+  {
+      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
+      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
+      c(bin_x = xp,
+        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
+        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
+   } )  )
+
+
+# arbitrarily choose 2x IQRs and 10x IQRs as possible cut-offs.
+# I naively estimate the IQR from median and .75-quantile, good enough for now:
+IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
+y_2 <-  yfit[, "median"] + 2 * IQR
+y_10 <- yfit[, "median"] + 10* IQR
+
+# interpolate to all points to get poisson limit for each gene:
+  Lim10<- do.call(data.frame,
+    approx(bin_x, y_10, xout = log(allM))
+  )
+  colnames(Lim10) <- c("log_mean", "log_VMR")
+
+# same for less stringent cutoff:
+  Lim2<- do.call(data.frame,
+    approx(bin_x, y_2, xout = log(allM))
+  )
+  colnames(Lim2) <- c("log_mean", "log_VMR")
+  
+# minimal example for approx function:
+# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
+
+
+plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
+points(x, y, pch=20, cex=.1, col ="#ff000090")
+lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
+lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
+lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
+lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
+legend(x = min(log(allM), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+2IQRs", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue", "green" ))
+
+
+hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
+hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
+return(list(hvg_10IQR = hvg_10IQR, hvg_2IQR = hvg_2IQR))
+}
+```
+
+
+
+
+```{r}
+hvgs_T   <- getHVG(rawC[, Ts])
+hvgs_all <- getHVG(rawC)
+```
+
+
+
+
+# Play zone
+
+
+
+```{r}
+rawC[ names(hvgs_all$hvg_10IQR), ]
+
+cell1 <- 13
+cell2 <- 97
+genes <- names(hvgs_all$hvg_10IQR)
+genes <- genes[! is.na(genes)]
+
+C <- rawC[genes, Ts]
+C <- t( t(rawC[genes, Ts]) / cs)
+
+```
+
+
+# T cell HVGs
+```{r}
+
+normT <- t( t(rawC[names(hvgs_T$hvg_10IQR), Ts]) / colSums(rawC[, Ts]))
+
+normT <- apply( rawC[names(hvgs_T$hvg_10IQR), Ts], 2, function(col) {
+  (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
+})
+
+pheatmap::pheatmap(normT[, c(sample(which(isCD4Tcell[Ts]), 300), which(isCD8Tcell[Ts]))], cluster_cols = F,
+                   show_colnames =F)
+```
+
+
+
+
+
+
+
+# Seurat: T cells
+
+```{r}
+library(Seurat)
+s <- CreateSeuratObject(rawC[, Ts])
+s <- MakeSparse(s)
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+length(s@var.genes)
+```
+```{r}
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+# s <- JackStraw(object = s, num.replicate = 100, display.progress = FALSE)
+# JackStrawPlot(object =s, PCs = 1:12)
+PCElbowPlot(s)
+```
+
+```{r}
+s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:10, 
+    resolution = 0.6, print.output = 0, save.SNN = TRUE)
+s <- RunTSNE(object = s, dims.use = 1:10, do.fast = TRUE)
+```
+
+```{r}
+d_seurat <- parallelDist::parDist(s@dr$pca@cell.embeddings[, 1:10],
+                                  threads = 4)
+
+tsne_d <- Rtsne::Rtsne(as.matrix(d_seurat), is_distance = TRUE)
+```
+## Distances (Seurat, T cells)
+```{r}
+getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
+  
+  
+df_seurat <- rbind(
+   data.frame(Group ="CD4_CD4",  
+         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
+         stringsAsFactors = F),
+   data.frame(Group = "CD4_CD8", 
+         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F),
+   data.frame(Group = "CD8_CD8", 
+         seuratDistance = getUpper( as.matrix(d_seurat)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F)
+)
+```
+
+```{r}
+ggplot(df_seurat,
+       aes(x = seuratDistance, stat(density), fill = Group)) + geom_histogram(position = "identity", alpha = .6)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Seurat's means and disps
+
+FindVariableGenes by default uses ExpMean and LogVMR, which effectively do this
+with the lognormalized values x:
+
+```{r}
+x  <- s@data["poisson_1305", ]
+expMean <-  log(
+              x = mean(x = exp(x = x) - 1) + 1 )
+
+disp    <-  log(
+              x = var(x = exp(x = x) - 1) / mean(x = exp(x = x) - 1) )
+
+
+
+xf <- pCounts["poisson_1305", ]  / cs 
+
+```
+
+I find this worrying.
+
+
+# Seurat on poisson genes
+
+```{r}
+library(Seurat)
+
+s <- CreateSeuratObject(pCounts)
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+length(s@var.genes)
+```
+Seurat finds 600 HVGs where there is no biological information at all.
+```{r}
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+s <- JackStraw(object = s, num.replicate = 100, display.progress = FALSE)
+JackStrawPlot(object =s, PCs = 1:12)
+```
+```{r}
+s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:7, 
+    resolution = 0.6, print.output = 0, save.SNN = TRUE)
+s <- RunTSNE(object = s, dims.use = 1:7, do.fast = TRUE)
+TSNEPlot(s)
+```
+
+# Monocle on Poisson genes
+
+```{r}
+library(monocle)
+pd <- new("AnnotatedDataFrame", data = data.frame(
+  cellID = colnames(pCounts_small),
+  row.names = colnames(pCounts_small)))
+fd <- new("AnnotatedDataFrame",
+          data.frame(gene_short_name= rownames(pCounts_small),
+                 row.names=rownames(pCounts_small)))
+cds_p <- newCellDataSet(Matrix(pCounts_small, sparse = T), phenoData = pd, featureData = fd,
+                      expressionFamily = negbinomial.size())
+
+pd <- new("AnnotatedDataFrame", data = data.frame(
+  cellID = colnames(rawC_small),
+  row.names = colnames(rawC_small)))
+fd <- new("AnnotatedDataFrame",
+          data.frame(gene_short_name= rownames(rawC_small), 
+                 row.names=rownames(rawC_small)))
+cds  <- newCellDataSet(Matrix(rawC_small, sparse = T), phenoData = pd, featureData = fd,
+                      expressionFamily = negbinomial.size())
+
+
+
+
+cds <- estimateSizeFactors(cds); cds <- estimateDispersions(cds)
+cds_p <- estimateSizeFactors(cds_p); cds_p <- estimateDispersions(cds_p)
+disp_table <- dispersionTable(cds)
+disp_table_p <- dispersionTable(cds_p)
+
+
+plot(disp_table$mean_expression, disp_table$dispersion_empirical, log="xy",
+     pch=20, cex=.3, xlab = "Mean Expression", ylab="Empirical dispersion",
+     col = "#00000090", # transparent black
+     main="Monocle's dispersion estimates\nRed: simulated poisson genes")
+points(disp_table_p$mean_expression, disp_table_p$dispersion_empirical, pch = 20, cex=.3, col="#ff000090")
+```
+
+We see that monocle could gain a lot by simply modelling poisson noise and
+plotting it into their dispersion plot.
+
+
+
+
+
+
+
+
+
+
+
+# End of Script
+
+```{r}
+devtools::session_info()
+```
+
+

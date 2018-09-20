@@ -279,7 +279,7 @@ a helper function to cast the results into a nice dataframe (`List2DF`), and
 three functions to create interpretable ggplots from it:
 ```{r uglyFunctions}
 
-oneRound <- function( training_A = cd4training, training_B = cd8training){
+oneRound <- function( training_A = cd4training, training_B = cd8training, normCounts = A[Aselect, ]){
 # R function of class "what a terrible, hardcoding piece of code!".
   
  # for each alpha we'll use the same 10 groups in crossvalidation to make them comparable:
@@ -287,7 +287,7 @@ oneRound <- function( training_A = cd4training, training_B = cd8training){
  
  fits <- pbmclapply(my_alphas,
    function(a) {
-                cv.glmnet( x = t(A[Aselect, c(training_A, training_B)]),
+                cv.glmnet( x = t(normCounts[, c(training_A, training_B)]),
                 y = as.factor(groundtruth[ c( training_A, training_B)]),
                 family = "binomial",
                 foldid = cv_labels,
@@ -308,7 +308,7 @@ oneRound <- function( training_A = cd4training, training_B = cd8training){
  #   * missclassified CD4 T cells
  #   * missclassified CD8 T cells
  misclass <- pbmclapply(fits, function(fit) {
-  predicted <- predict(fit, newx = t(A[Aselect, ]), s = "lambda.1se",
+  predicted <- predict(fit, newx = t(normCounts), s = "lambda.1se",
               type = "class")[, 1]
   cd4_miscl <- sum(groundtruth == "CD4" & predicted == "CD8") 
   cd8_miscl <- sum(groundtruth == "CD8" & predicted == "CD4")
@@ -602,16 +602,66 @@ downsample <- function(matrix, p=.8) {
 
 
 
+rawT.6 <- downsample(rawT, p = .6)
+rawT.4 <- downsample(rawT, p = .4)
+rawT.2 <- downsample(rawT, p = .2)
+```
+
+Performance on 40 % of the original counts (~ 500 detected genes)
+```{r}
+A.4 <- apply(rawT.4, 2, function(x) (sqrt(x + 3/8)-sqrt(3/8)) / sqrt(sum(x)))
+
+# Gene Variances are largely the same (not shown), so
+# I can use A_select from above:
+sparse40_50_50  <- replicate(10, oneRound(sample(idx_cd4, 50), sample(idx_cd8, 50), normCounts = A.4[Aselect, ]),
+                             simplify = FALSE)
+
+p_n(addProportions(List2DF(sparse40_50_50)))
+```
+
+Quick comparison to what Seurat can do:
+```{r}
+library(Seurat)
+s <- CreateSeuratObject(rawT.4)
+s <- NormalizeData(s)
+s <- FindVariableGenes(s)
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s <- RunPCA(object = s, do.print = F)
+PCElbowPlot(object = s)
+s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:10, 
+    resolution = 0.6, print.output = 0)
+s <- RunTSNE(object = s, dims.use = 1:10, do.fast = TRUE)
 
 
 
-
-rawC.8 <- downsample(rawC, p = .8)
-rawC.6 <- downsample(rawC, p = .6)
-rawC.4 <- downsample(rawC, p = .4)
 ```
 
 
+
+Let's do it once and check the 'response':
+```{r}
+my_lambdas   <- 10^seq(-10, 1, length.out = 100)
+training_A <- sample(idx_cd4, 50)
+training_B <- sample(idx_cd8, 50)
+fit <- cv.glmnet( x = t(A.4[Aselect, c(training_A, training_B)]),
+                y = as.factor(groundtruth[ c( training_A, training_B)]),
+                family = "binomial",
+                type.measure = "class",
+                alpha  = .5,
+                lambda = my_lambdas
+                )
+
+
+pr <- predict(fit, newx = t(A.4[Aselect, ]), s = "lambda.1se",
+              type = "response")
+
+ggplot(data.frame(Prob_CD4 = pr[, 1], groundtruth)) + geom_jitter(aes(x=groundtruth, Prob_CD4))
+
+
+plot(colSums(rawT), pr[, 1], pch = 20, cex = .4, col = 1 + (groundtruth == "CD4"),
+     ylab = "Response",
+     main = "ElasticNet (.5) with 50 training cells each\nCiteSeq groundtruth: CD4 in red, CD8 in black")
+```
 
 
 
