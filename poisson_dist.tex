@@ -1,4 +1,4 @@
-\documentclass{article}
+\documentclass[fleqn]{article}
 
 \usepackage[a4paper]{geometry}
 \usepackage{amsmath}
@@ -13,84 +13,78 @@
 \subsection*{Ratio of two Poisson variables}
 
 Consider two random variables distributed according to
-
 \[ K_1 \sim \text{Pois}(\lambda_1), \qquad K_2 \sim \text{Pois}(\lambda_2) \]
-
 We wish to estimate the the log ratio of the two rate parameters, $d = \log(\lambda_2/\lambda_1)$.
-A naive estimate would be $\log (K_2/K_1)$. What is the maximum likelhood estimate (MLE)?
+A naive estimate would be $\log (K_2/K_1)$. TO get a more prinicpled answer, let us derive the maximum likelhood estimate (MLE).
 
 To this end, we write $\lambda=\sqrt{\lambda_1 \lambda_2}$ for the geometric mean of the two rate parameters and
-write the rate parameters in terms of this and $d$: $\lambda_1=e^{-d/2}\lambda$ and $\lambda_2=e^{d/2}\lambda$.
-Writing $f_\text{Pois}(K,\lambda) = \lambda^k e^{-\lambda} / k!$ for the probability mass function fo the Poisson distribution, the
-the likelhood function for $d$, given $\lambda$, is $f_\text{Pois}(K_1,\lambda_1) f_\text{Pois}(K_2,\lambda_2)$. 
+write the two rate parameters in terms of this $\lambda$ and $d$: $\lambda_1=e^{-d/2}\lambda$ and $\lambda_2=e^{d/2}\lambda$.
+Using $f_\text{Pois}(k,\lambda) = \lambda^k e^{-\lambda} / k!$ for the probability mass function of the Poisson distribution, we
+can write the likelhood function for $d$, given $\lambda$, as $f_\text{Pois}(K_1,\lambda_1) f_\text{Pois}(K_2,\lambda_2)$. 
 We get rid of the nuisance parameter $\lambda$ by integrating over its entire domain and get
+\begin{align} l(d|k_1,k_2) &= \int_0^\infty f_\text{Pois}(K_1,\lambda_1) f_\text{Pois}(K_2,\lambda_2) d\lambda \nonumber \\
+&= \frac{e^{\frac{d}{2}(k_2-k_1)}}{k_1! k_2!} \int_0^\infty \lambda^{k_1+k_2} \exp\left(  - \lambda (e^{d/2}+e^{-d/2}) \right)   d\lambda \nonumber  \\
+&= \frac{\Gamma(k_1+k_2+1)}{k_1! k_2!} \frac{ \displaystyle e^{\frac{d}{2}(k_2-k_1)} }{\displaystyle  \left( e^\frac{d}{2}+e^{-\frac{d}{2}} \right)^{k_1+k_2+1} }
+\nonumber\\
+&= \binom{k_1+k_2}{k_1} \frac{ \displaystyle e^{\frac{d}{2}(k_2-k_1)} }{\left( \cosh\frac{d}{2}\right)^{k_1+k_2+1}}
+\end{align}
+In evaluating the integral, we have used $\int_0^\infty \lambda^{k}e^{-A\lambda}\text{d}\lambda = \Gamma(k+1)/A^{k+1}$. 
 
-\begin{multline} l(d|k_1,k_2) = \int_0^\infty f_\text{Pois}(K_1,\lambda_1) f_\text{Pois}(K_2,\lambda_2) d\lambda \\
-= \int_0^\infty \lambda^{k_1+k_2} \exp\left( \frac{d}{2}(k_2-k_1) - \lambda (e^{d/2}+e^{-d/2}) \right)  / (k_1! k_2!)\,\, d\lambda \\
-= \binom{k_1+k_2}{k_1} \frac{ e^{\frac{d}{2}(k_2-k_1)} }{  \left( \frac{e^d - e^{-d}}{e^{d/2}-e^{-d/2}} \right)^{k_1+k_2+1} }
-\end{multline}
+In order to find the maximum of $l(d|k_1,k_2)$, we calculate the derivative of the likelihood and find its zero:
+\begin{equation} 
+\frac{\partial}{\partial d} \log l(d|k_1,k_2) =  {\textstyle\frac{1}{2}}(k_2-k_1) - 
+{\textstyle\frac{1}{2}}(k_1+k_2+1)\tanh{\textstyle\frac{d}{2}} \label{deriv_ll}
+\end{equation}
 
-Finding the maximum of $l(d|k_1,k_2)$ by setting its derivative w.\,r.\,t. $d$ to zero yield the MLE
+Setting this to zero, we find the maximum of the likelihood:
+\[ \hat d = \operatorname*{arg\,max}_d  l(d|k_1,k_2) = 2 \operatorname{Artanh} \frac{ k2 - k1 } {  k1 + k2 + 1 }  = \log\frac{k_2+\frac{1}{2} }{ k_1+\frac{1}{2}  }. \]
 
-\[ \hat d = \operatorname*{arg\,max}_d  l(d|k_1,k_2) = 2 \operatorname{Artanh} \frac{ k2 - k1 } {  k1 + k2 + 1 }  = 2 \log\frac{k_2+\frac{1}{2} }{ k_1+\frac{1}{2}  }. \]
-
-The first form with the Artanh is the results obtained by using Mathematica, the second form with the log ratio gives further insight: The MLE is formed similar to the naive estimate, $\log(k_2/k_1)$, but one has to add half a pseudocount before dividing.
+The first form results directly from setting (\ref{deriv_ll}) to zero, the second is found by rearranging and gives further insight: The MLE is formed similar to the naive estimate, $\log(k_2/k_1)$, but one has to add half a pseudocount before dividing.
 
 
 To get a standard error (SE) for the MLE, we estimate thesecond derivative of the log likelihood
 \[ \frac{\mathrm{d}^2\log l(d|k_1,k_2)}{\mathrm{d}d^2} =  \frac{ ( 2 k_1 + 1 ) ( 2 k_2 + 1 ) }{ 4 (k_1+k_2+1) } = 
-\frac{(k_1+\frac{1}{2})(k_2+\frac{1}{2})}{(k_1+\frac{1}{2})+(k_2+\frac{1}{2})},\]
-where we again have rewritten the result provided by Mathematica in a form suggestive of a pseudocount interpretation.
+\frac{1}{\frac{1}{k_1+\frac{1}{2}} + \frac{1}{k_2+\frac{1}{2}}},\]
+where we again have rewritten the result in a form suggestive of a pseudocount interpretation.
 
 The MLE with SE is hence
-
-\[ \hat d \pm \sigma_{\hat d} = 2 \log\frac{\tilde k_2}{ \tilde k_1 }
-\pm \sqrt{ \frac{\tilde k_1 \tilde k_2}{\tilde k_1 + \tilde k_2} } \qquad \text{ with } \tilde k_{1,2} = k_{1,2} + \textstyle{\frac{1}{2}}. \]
+\[ \hat d \pm \sigma_{\hat d} = \log\frac{\tilde k_2}{ \tilde k_1 }
+\pm \textstyle\sqrt{ \frac{1}{\left.1\middle/\tilde k_1\right. + \left.1\middle/\tilde k_2\right.} } \qquad \text{ with } \tilde k_{1,2} = k_{1,2} + \textstyle{\frac{1}{2}}. \]
 
 In the next section, we will need the square of the MLE, $\hat d^ 2$, for which the SE is
-
-\[ \text{need to look this up} \]
+\begin{equation} 
+\text{need to look this up} \label{d2SE} 
+\end{equation}
 
 
 \subsection*{Single-cell RNA-Seq data}
 
 Consider single-cell RNA-Seq data, where we count how many UMIs we see for reads mapped to a gene $i$ from a cell $j$. I assume that there is a hidden quantity $Q_{ij}$ denoting the strength of expression of gene $i$ in cell $j$ and that the observed number of UMIs, $K_{ij}$, is a Poisson 
 variable with a rate proportional to $Q_{ij}$:
-
 \[ K_{ij} \sim \text{Pois}(s_j Q_{ij}). \]
 
 [I should write a more extensive justification of this model.]
 
-It seems reasonable to say that the $Q_{ij}$ would be the informative quantities if we could observe them. If we want to compare a gene's expression between two cells, the ratio of the expression values $Q_{ij'}/Q_{ij}$, or its logarithm, seems to be the quantity one would want to estimate. As we have seen above, $\log (K_{ij}+\frac{1}{2}) / (K_{ij'}+\frac{1}{2})$, is a reasonable estimator for this, and the SE given above is useful to quantify the uncertainty of this.
+It seems reasonable to say that the $Q_{ij}$ would be the informative quantities if we could observe them. If we want to compare a gene's expression between two cells, the ratio of the expression values $Q_{ij'}/Q_{ij}$, or its logarithm, seems to be the quantity one would want to estimate. As we have seen above, $\log (K_{ij'}+\frac{1}{2}) / (K_{ij}+\frac{1}{2})$, is a reasonable estimator for $(s_{j'}Q_{ij'})/(s_{j}Q_{ij})$, and the SE given above is useful to quantify the uncertainty of this.
 
 If the $Q_{ij}$ for a gene $i$ are the same for all cells $j$, the gene will not be informative for the purpose of inferring any differences between cells. The same is true if the variation of $Q_{ij}$ across cells is, while not zero, still much smaller than the Poisson noise introduced by going
 from $Q$ to $K$.
 
-Therefore, let's study the case that a genes expression varies only weakly around its mean. We write
-
-\[ \operatorname{E} Q_{ij} = \mu_i, \qquad  \operatorname{E} Q_{ij} = v_{i0} \]
+Therefore, let's study the case that a gene's expression is well described by just specifying the first two moments. We write
+\[ \operatorname{E} Q_{ij} = \mu_i, \qquad  \operatorname{Var} Q_{ij} = v_{i0} \]
 
 Given the observed counts $K_ij$, we can use the estimators
-
 \[ \hat\mu_i = \frac{1}{N}\sum_{j=1}^N\frac{K_{ij}}{s_j} \]
-
 and
-
 \[ \hat v_i = \frac{1}{N-1} \left( \frac{K_{ij}}{s_j} - \hat\mu_i \right)^2,\]
-
 where we plug in a suitably estimated value for the size factors $s_j$, for example the count sum
-
 \[ \hat s_j = \sum_i K_{ij}.\]
 
 Assuming that the estimates used for $s_j$ are exact (i.e., putting aside this complication for now), it is easy to show
-that $\hat\mu_i$ is unbiases,
-
+that $\hat\mu_i$ is unbiased,
 \[ \operatorname{E} \hat \mu_i = \mu_i, \]
-
 and that 
-
-\[ \operatorname{E} \hat v_i = \Xi \mu + v_{i0},\qquad\text{with } \Xi = \frac{1}{N}\sum_j\frac{1}{s_j}, \]
-
+\[ \operatorname{E} \hat v_i = \Xi \mu_i + v_{i0},\qquad\text{with } \Xi = \frac{1}{N}\sum_j\frac{1}{s_j}, \]
 i.\,e., the $\hat v$ is an unbiased estimate of a total variance, comprising two components, namely the
 variance of the expression values, $v_{i0}$, and the Poisson variance $\Xi\mu_i$. The Poisson variance
 component is proportional, though not equal, to the mean. It is not equal because we scale the Poisson-distributed
@@ -102,14 +96,11 @@ that are significantly above the line are informative, the others can be ignored
 
 What is ``significantly above'' depends on $\mu_i$. This is because the standard error for $\hat\mu_i$ increases with decreasing $\mu_i$, and this
 also increases the error in $\hat v_i/\hat\mu_i$. We can show that
-
 \[ \operatorname{Var}\hat\mu_i = ... \]
 
 It is harder to say something of for the standard error of $\hat v_i$, because it depends on the third and fourth moments of $Q_{ij}$.
 However, by calculating for the vase of $v_{i0} = 0$, i.\,e. for Poisson-only noise, we can show that
-
 \[ \operatorname{Var}\hat v_i \ge ... \text{[waiting for Sveta to figure this one out...  ]}, \]
-
 where equality holds only for $v_i=0$.
 
 
@@ -118,30 +109,22 @@ where equality holds only for $v_i=0$.
 It seems reasonable to consider the vector $\vec q_j = \left( \log Q_{ij} \right)_j$ as representing the cell and its state in
 ``transcriptional feature space''. (To add: Discussion of why we use use the logarithmized expression here.) The distance $D_{jj'}$ between
 two cells $j$ and $j'$ can then be seen as a random variable
+\[ D_{jj'}^2 = (\vec q_{j'} - \vec q_{j})^2 = \sum_i\left( \log Q_{ij'} - \log Q_{ij} \right)^2 = \sum_i\left( \log\frac{Q_{ij'}}{Q_{ij}} \right)^2. \]
 
-\[ D_{jj'}^2 = (\vec q_j' - \vec q_{j'})^2 = \sum_i\left( \log Q_{ij'} - \log Q_{ij'} \right)^2 = \sum_i\left( \frac{Q_{ij}}{Q_{ij'}} \right)^2. \]
+Using the result from the first section, we suggest to estimate this distance by
+\[ \hat D_{jj'}^2 = \sum_i\left( \frac{K_{ij}+\frac{1}{2}}{K_{ij'}+\frac{1}{2}} \cdot \frac{s_{j'}}{s_j} \right)^2. \]
 
-Using the result from the first section, we suggest to estimate this distance as
-
-\[ \hat D_{jj'}^2 = \sum_i\left( \frac{K_{ij}+\frac{1}{2}}{K_{ij'}+\frac{1}{2}} \right)^2. \]
-
-We can give a SE for this estimator by adding up the SEs for the genes' individual log ratio estimators, as given in Eq.().
+We can give a SE for this estimator by adding up the SEs for the genes' individual log ratio estimators, as given in (\ref{d2SE}).
 
 As the SEs vary greatly from gene to gene, it pays to use weights, $w_i$, which are large for genes $i$, for which the SE is low over
 most pairs of cell and vice versa. We then use
-
 \[ (\hat D^\text{w}_{jj'})^2 = \sum_i\left( w_i \frac{K_{ij}+\frac{1}{2}}{K_{ij'}+\frac{1}{2}} \right)^2 \]
-
 with standard error
-
 \[ ... \]
 
 We can calculate an average distance sampling variance as
-
 \[ \sum_{j,j'} ... \]
-
 and minimize it by setting the weights to
-
 \[ ... \]
 
 \end{document}
