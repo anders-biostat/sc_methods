@@ -113,116 +113,130 @@ Ts <- isCD4Tcell | isCD8Tcell
 
 # getHVG function
 ```{r}
-## getHVG bug report:
-#
-#  This function is terrible coding practice; rewrite it completely!
-#
-#  rowMeans(rawC) and allM is redundant computation, that's uncritical but not elegant
-#
-#  everytime you run it, different genes get selected due to stochastic poisson.
-#  We'll probably find an analytic solution eventually anyways that should fix it.
+## bug report for below function(s):
+  #
+  #  This function is terrible coding practice; rewrite it completely!
+  #
+  #  rowMeans(rawC) and allM is redundant computation, that's uncritical but not elegant
+  #
+  #  everytime you run it, different genes get selected due to stochastic poisson.
+  #  We'll probably find an analytic solution eventually anyways that should fix it.
 
+                                                  ##
 
-getHVG <- function(mat = rawC, nbin_qreg = 75) {
-##                                                        ##
-##   terrible hardcoded function, does the job for now.   ##
-##                                                        ##
-
-cs <- colSums(mat) 
-
-# Simon wants to filter out low-abundance genes. A very conservative cutoff is
-# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
-threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
-   # used by rawC
-   # also used by Poisson raw counts below
-
-# estimate each gene's true mean and var - for this we normalize with library size:
-  normC <- t( t(mat) / cs)
-  normC <- normC[rowMeans(normC) > threshold,]
-  allM <- apply(normC, 1, mean)
-  allV <- apply(normC, 1, var)
-
-
-# simulate poisson raw counts relevent to our data (i.e. using allM):
-  nc <- ncol(mat)
-  pCounts <- do.call(rbind,
-                     pbmclapply(allM, function(mu) {rpois(nc, lambda = mu * cs)},
-                                mc.cores=4) )
-  # superfluous, here because I used to punch these into Seurat:
-  rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
-  colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
-
-# as with real counts:
-  normP <- t( t(pCounts) / cs)
-  allMP <- apply(normP, 1, mean)
-  allVP <- apply(normP, 1, var)
-  # x,y for ease of typing. threshold also prevents -Inf values, defensive progr.:
-  x <- log(allMP[allMP > threshold])
-  y <- log(allVP[allMP > threshold] / allMP[allMP > threshold])
-
-
-# going over all x takes long, so we fit the VMR-mean relationship in bins:
-xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_x <- seq(xrange[1], xrange[2], length.out = nbin_qreg)
-# random poisson by chance might not cover the extreme values:
-bin_x <- c(log(min(allM)), bin_x, log(max(allM)))
-
-# Simon's local quantile fit (faster using matrix notation, `mm`)
-mm <- cbind( Intercept = 1, X = x, X2 = x^2 )
-yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
-  {
-      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
-      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
-      c(bin_x = xp,
-        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
-        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
-   } )  )
-
-
-# arbitrarily choose 2x IQRs and 10x IQRs as possible cut-offs.
-# I naively estimate the IQR from median and .75-quantile, good enough for now:
-IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
-y_2 <-  yfit[, "median"] + 2 * IQR
-y_10 <- yfit[, "median"] + 10* IQR
-
-# interpolate to all points to get poisson limit for each gene:
-  Lim10<- do.call(data.frame,
-    approx(bin_x, y_10, xout = log(allM))
-  )
-  colnames(Lim10) <- c("log_mean", "log_VMR")
-
-# same for less stringent cutoff:
-  Lim2<- do.call(data.frame,
-    approx(bin_x, y_2, xout = log(allM))
-  )
-  colnames(Lim2) <- c("log_mean", "log_VMR")
+VMRstats <- function(mat = rawC, nbin_qreg = 75) {
+  cs <- colSums(mat) 
   
-# minimal example for approx function:
-# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
+  # Simon wants to filter out low-abundance genes. A very conservative cutoff is
+  # the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
+  threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
+     # used by rawC
+     # also used by Poisson raw counts below
+    print("Simulate Poisson Counts...")
+  # estimate each gene's true mean and var - for this we normalize with library size:
+    normC <- t( t(mat) / cs)
+    normC <- normC[rowMeans(normC) > threshold,]
+    allM <- apply(normC, 1, mean)
+    allV <- apply(normC, 1, var)
+  
+  
+  # simulate poisson raw counts relevant to our data (i.e. using allM):
+    nc <- ncol(mat)
+    pCounts <- do.call(rbind,
+                       pbmclapply(allM, function(mu) {rpois(nc, lambda = mu * cs)},
+                                  mc.cores=4) )
+    # superfluous, here because I used to punch these into Seurat:
+    rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
+    colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+  
+    print("Normalize Poisson Counts...")
+  # as with real counts:
+    normP <- t( t(pCounts) / cs)
+    allMP <- apply(normP, 1, mean)
+    allVP <- apply(normP, 1, var)
+    # x,y for ease of typing. threshold also prevents -Inf values, defensive progr.:
+    x <- log(allMP[allMP > threshold])
+    y <- log(allVP[allMP > threshold] / allMP[allMP > threshold])
+  
+  print("Fit VMR-mean relationship...")
+  # going over all x takes long, so we fit the VMR-mean relationship in bins:
+  xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
+  bin_x <- seq(xrange[1], xrange[2], length.out = nbin_qreg)
+  # random poisson by chance might not cover the extreme values:
+  bin_x <- c(log(min(allM)), bin_x, log(max(allM)))
+  
+  # Simon's local quantile fit (faster using matrix notation, `mm`)
+  mm <- cbind( Intercept = 1, X = x, X2 = x^2 )
+  yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
+    {
+        fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
+        fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
+        c(bin_x = xp,
+          q75= fit$coefficients %*% c( 1, xp, xp^2 ),
+          median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
+    } )  )
+  
+  # interpolate Poisson median and quantile for each gene: 
+  all_y<- do.call(data.frame,
+                 c( 
+                   poisson_medians <- approx(x = yfit[, "bin_x"],
+                                             y = yfit[, "median"],
+                                             xout = log(allM)),
+                   poisson_q75     <- approx(x = yfit[, "bin_x"],
+                                             y = yfit[, "q75"],
+                                             xout = log(allM)) ) )
+  # return final result:
+  data.frame(
+      log_Gene_Mean         = all_y[, 1],
+      log_Gene_VMR          = log(allV / allM),
+      log_PoissonVMR_median = all_y[, 2],
+      log_PoissonVMR_q75    = all_y[, 4],
+      IQR_of_logged_VMR         = 2 * (all_y[, 4] - all_y[, 2]),
+      row.names = rownames(all_y)
+    )
+  } 
 
 
-plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
-points(x, y, pch=20, cex=.1, col ="#ff000090")
-lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
-lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
-lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
-lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
-legend(x = min(log(allM), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+2IQRs", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue", "green" ))
-
-
-hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
-hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
-return(list(hvg_10IQR = hvg_10IQR, hvg_2IQR = hvg_2IQR))
+getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
+  # returns genes that are more than n IQRs away (default: n = 10).
+  hvg  <- vmrstats$log_Gene_VMR >
+         vmrstats$log_PoissonVMR_median + IQRs * vmrstats$IQR_of_logged_VMR
+  return(vmrstats[hvg, ])
 }
+
+
+v <- VMRstats(rawC[, Ts])
+v <- v[order(v$log_Gene_Mean), ]
+
+
+hvg10 <- v$log_Gene_VMR >
+         v$log_PoissonVMR_median + 10 * v$IQR_of_logged_VMR
+
+
+plot(v$log_Gene_Mean, v$log_Gene_VMR, pch = 20, cex=.1, col = "#00000090")
+lines(v$log_Gene_Mean, v$log_PoissonVMR_median,
+      lwd = 1.5, col = "orange")
+lines(v$log_Gene_Mean, v$log_PoissonVMR_q75,
+      lwd = 1.5, lty = "dashed", col = "orange")
+lines(v$log_Gene_Mean,
+      v$log_PoissonVMR_median + v$IQR_of_logged_VMR,
+      lwd = 1.5, lty="dashed", col = "red")
+points(v$log_Gene_Mean[hvg10], 
+       v$log_Gene_VMR[hvg10], pch=20, col = "red")
+
+
 ```
 
 
 
 
 ```{r fig.height=9, fig.width=9}
-hvgs_T   <- getHVG(rawC[, Ts])
+hvgs_T   <- VMRstats(rawC[, Ts])
+                 hvg_2IQR = getHVG(hvgs_T, IQRs = 2)
+                 hvg_10IQR = getHVG(hvgs_T, IQRs = 10)
 
-hvgs_all <- getHVG(rawC)
+
+hvgs_all <- VMRstats(rawC)
 ```
 
 
