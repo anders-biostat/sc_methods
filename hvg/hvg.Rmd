@@ -111,7 +111,7 @@ Ts <- isCD4Tcell | isCD8Tcell
 
 
 
-# getHVG function
+# VMRstats function
 ```{r}
 ## bug report for below function(s):
   #
@@ -129,9 +129,7 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
   
   # Simon wants to filter out low-abundance genes. A very conservative cutoff is
   # the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
-  threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
-     # used by rawC
-     # also used by Poisson raw counts below
+  threshold <- mean(c(1/500,  rep(0, ncol(mat[, Ts])-1)))
     print("Simulate Poisson Counts...")
   # estimate each gene's true mean and var - for this we normalize with library size:
     normC <- t( t(mat) / cs)
@@ -203,8 +201,13 @@ getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
          vmrstats$log_PoissonVMR_median + IQRs * vmrstats$IQR_of_logged_VMR
   return(vmrstats[hvg, ])
 }
+```
 
 
+
+# test getHVG function
+
+```{r}
 v <- VMRstats(rawC[, Ts])
 v <- v[order(v$log_Gene_Mean), ]
 
@@ -230,17 +233,6 @@ points(v$log_Gene_Mean[hvg10],
 
 
 
-```{r fig.height=9, fig.width=9}
-hvgs_T   <- VMRstats(rawC[, Ts])
-                 hvg_2IQR = getHVG(hvgs_T, IQRs = 2)
-                 hvg_10IQR = getHVG(hvgs_T, IQRs = 10)
-
-
-hvgs_all <- VMRstats(rawC)
-```
-
-
-
 
 
 
@@ -252,7 +244,63 @@ hvgs_all <- VMRstats(rawC)
 
 ```{r}
 # save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+library(ggplot2)
+library(pbmcapply) # parallelization
+library(quantreg)  # quantile regression with rq.wfit
+library(parallelDist)
 load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+```
+
+
+
+
+# Sveta's variance of Poisson-variance
+
+I simulate poisson counts:
+```{r}
+cs <- colSums(rawC[, Ts]) 
+# estimate each gene's true mean and var - for this we normalize with library size:
+estMeans <- apply(t( t(rawC[ rowMeans(rawC[, Ts]) > 0.00530, Ts]) / cs), 1, mean)
+estMeans <- sample(estMeans, 1000)
+
+# simulate poisson raw counts relevant to our data (i.e. using allM):
+    nc <- ncol(rawC[, Ts])
+   
+    
+    poisson_replicates <- replicate(100, { 
+    singlePoisson <- do.call(rbind,
+                           lapply(estMeans, function(mu) rpois(nc, lambda = mu * cs))
+                           )
+    
+    apply( t(singlePoisson) / cs, 2, var)} )
+    
+    
+    
+# Sveta's variance estimation:
+    var_theo <- function(mu, colsums = colSums(rawC[, Ts])) {
+     N   <- length(colsums)
+     psi <- sum(1/colsums) / N
+     
+     vt <- 2/(N-1)/(N-1) * mu^2 * psi^2 +
+           (2*N-4)/(N*(N-1)^2) * mu * mu * sum(1/(colsums^2)) +
+           mu / N / N * sum(1/(colsums^3))
+    }
+
+
+plot(apply(poisson_replicates, 1, var), var_theo(estMeans, cs), log = "xy")
+
+all.equal(apply(poisson_replicates, 1, var), var_theo(estMeans, cs))
+
+
+```
+
+```{r}
+poisson_sds <- sqrt( var_theo(exp(v$log_Gene_Mean), colSums(rawC[, Ts])) )
+
+plot(v$log_Gene_Mean, v$log_Gene_VMR, pch = 20, cex=.1, col = "#00000090")
+lines(v$log_Gene_Mean, v$log_PoissonVMR_median,
+      lwd = 1.5, col = "orange")
+lines(v$log_Gene_Mean, )
 ```
 
 
@@ -263,7 +311,64 @@ load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 # Play zone
+
+
+
+
+
+## Covariance of Poisson estimators
+```{r}
+# My VMR-over-mean plot implicitly estimates the true variance and mean of each
+# gene, and the vmr as well. Sveta has come up with formulas for the variances
+# of the first two estimators (mean_hat and var_hat), and from these I can compute
+# the variance of the vmr estimator. This follows the formula
+#
+#      var(log_vmr) = var(log_var) + var(-log_mean) + 2 * cov(log_var, -log_mean)
+#
+# It is interesting for me to see whether the covariance of log_var and log_mean
+# is 0 as hoped, or if it's above.
+
+meanvar_correl <- do.call(rbind, lapply(exp(-5:10), function(x) {
+
+cors <- t(replicate(5, {
+  mv <- t(replicate(100, expr = {
+  p <- rpois(8000, x)
+  c(mean(p), var(p)) } ))
+  c( lambda = x, varmean_cov = cov(log(mv[,1]), log(mv[,2]) ), var_of_var = var(log(mv[, 2])),
+     var_of_mean = var(log(mv[, 1])))
+}))
+
+}) )
+
+plot(meanvar_correl, log = "x")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ```{r}
 s <- MakeSparse(CreateSeuratObject(rawC[, Ts]))
