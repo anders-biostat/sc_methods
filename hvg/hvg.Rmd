@@ -313,6 +313,52 @@ lines(v$log_Gene_Mean, )
 
 
 
+# Plausible gene means informed by the CITEseq dataset 
+This is useful for all kinds of simulations.
+```{r}
+plausible_means <- c( 
+  runif(575, min = .5, max = 1),
+  runif(267, min = 1,  max = 2),
+  runif(190, min = 2,  max = 10),
+  runif(70, min = 10, max = 40)  )
+# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
+# cs <- colSums(rawC)
+# normC <- t( t(rawC) *mean(cs)/ cs)
+# table(round(rowMeans(normC)))
+# rms <- rowMeans(normC)
+# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
+# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
+```
+
+
+
+## Power analysis
+```{r}
+n1 = 2500 # number of cells in population 1
+n2 = 250 # number of cells in population 2
+nP = n1+n2   # sum of all cells (nP = n for poisson simulation)
+foldchange = 2
+
+fc <- as.data.frame(do.call(rbind,
+lapply(plausible_means, function(m) {
+  x <- c(rpois(n1, m), rpois(n2, foldchange * m))
+  c(mean = mean(x), var = var(x), vmr = var(x) / mean(x))
+})
+) )
+
+P <- as.data.frame(do.call(rbind,
+lapply(plausible_means, function(m) {
+  x <- rpois(nP, m)
+  c(mean = mean(x), var = var(x), vmr = var(x) / mean(x))
+})
+) )
+
+plot(fc$mean, fc$vmr, log = "xy", pch = 20, cex=.1,
+     ylim = range(c(fc$vmr, P$vmr)),
+     xlim = range(c(fc$mean, P$mean)))
+points(P$mean,   P$vmr, pch=20, cex=.1, col = "red")
+
+```
 
 
 
