@@ -17,8 +17,10 @@ output:
 # Load Packages
 
 ```{r}
+library(ggplot2)
 library(pbmcapply) # parallelization
 library(quantreg)  # quantile regression with rq.wfit
+library(parallelDist)
 ```
 
 
@@ -41,6 +43,21 @@ rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
 prot <- prot[, ! is_mouse]
 ```
 
+
+
+
+# RNA data: normalization
+
+```{r}
+normC <- apply( rawC, 2, function(col) {
+  (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
+})
+
+```
+
+
+
+
 # Protein data: normalization and Cell identities
 ```{r}
 # simplifying Seurat's code to compute Centered Log Ratio (CLR):
@@ -49,11 +66,22 @@ norm_prot <- apply(prot, 1, function(x) {
                           (exp(sum(log1p((x)[x > 0]), na.rm = TRUE)/length(x + 1))) ) })
 
 
- # exclude NK and monos: 
-  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1)
+ # exclude NK and monos:
+  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1, 
+       main = "CITEseqs protein data\nto exclude NKs (CD56) and myeloid cells (CD11c)")
+  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
+ 
+# exclude erythrocytes. No good protein marker available, we use RNA for it:
+  not_ery <- normC["HUMAN_HBB", ]  < .05  &
+             normC["HUMAN_HBG2", ] < .05 &
+             normC["HUMAN_HBA1", ] < .04 
+# same for platelets / megakaryocytes:
+  not_platelet <- normC["HUMAN_GP9", ] < .005 &
+                  normC["HUMAN_PF4", ] < .005 &
+                  normC["HUMAN_PPBP", ] < .005 
+  
   
 # B and T cells:
-  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
   has_B_markers <- norm_prot[, "CD19"] > 2  &  norm_prot[, "CD3"] < .5
   has_T_markers <- norm_prot[, "CD19"] < 1.5  &  norm_prot[, "CD3"] > 1
   plot(norm_prot[, "CD3"], norm_prot[, "CD19"], pch =20, col =
@@ -62,8 +90,8 @@ norm_prot <- apply(prot, 1, function(x) {
 
   
     
-  isBcell <- has_B_markers & lin_neg
-  isTcell <- has_T_markers & lin_neg
+  isBcell <- has_B_markers & lin_neg & not_ery & not_platelet
+  isTcell <- has_T_markers & lin_neg & not_ery & not_platelet
 
   
   
@@ -75,133 +103,10 @@ norm_prot <- apply(prot, 1, function(x) {
   plot(norm_prot[, "CD4"], norm_prot[, "CD8"], pch=20, cex=.4,
        col = rgb(0, isCD4Tcell, isCD8Tcell), 
        main = "CD4 and CD8 T cells\nselected amongst T cells picked above")  
-```
-
-
-# Custom (T cells)
-```{r}
-Ts <- isCD4Tcell | isCD8Tcell
-cs <- colSums(rawC[, Ts])
-
-# Simon wants to filter out low-abundance genes. A very conservative cutoff is
-# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0.
-threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
-
-```
-
-
-## RNA data: ColSums and Poisson raw counts
-```{r}
-
-# estimate each gene's true mean by normalizing with library size first:
-normC <- t( t(rawC[, Ts]) / cs)
-normC <- normC[rowMeans(normC) > threshold,]
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-
-
-# simulate poisson raw counts for our data:
-library(pbmcapply)
-nc <- ncol(rawC[, Ts])
-pCounts <- do.call(rbind,
-                   pbmclapply(allM, function(mu) {
-                     rpois(nc, lambda = mu * cs)}, mc.cores=4) )
-rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
-colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
-
-pCounts_small <- Matrix::Matrix(
-  pCounts[sample(1:nrow(pCounts), 8000), sample(1:ncol(pCounts), 1000)], sparse=T)
-rawC_small <- Matrix::Matrix(
-  rawC[sample(1:nrow(rawC), 8000), sample(1:ncol(rawC), 1000)], sparse=T)
-```
-
-
-
-## Select HVGs
-
-Estimate poisson mean-var:
-```{r}
-normP <- t( t(pCounts) / cs)
-allMP <- apply(normP, 1, mean)
-allVP <- apply(normP, 1, var)
-```
-
-
-Local quantile fit:
-```{r}
-# ease of typing:
-x <- log(allMP)
-y <- log(allVP / allMP)
-
-
-# going over all x takes too long:
-xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_n <- 75
-bin_x <- seq(xrange[1], xrange[2], length.out = bin_n)
-
-# Simon's local quantile fit (faster with `mm` matrix)
-library(quantreg)
-mm <- cbind( 1, x, x^2 )
-yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
-  {
-      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
-      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
-      c(bin_x = xp,
-        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
-        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
-   } )  )
-
-
-
-# arbitrarily choose 2x IQR and 10x IQR as possible cut-offs:
-IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
-y_2 <-  yfit[, "median"] + 2 * IQR
-y_10 <- yfit[, "median"] + 10* IQR
-
-# interpolate to all points to get poisson limit for each gene:
-  Lim10<- do.call(data.frame,
-    approx(bin_x, y_10, xout = log(allM))
-  )
-  colnames(Lim10) <- c("log_mean", "log_VMR")
-
-# same for less stringent cutoff:
-  Lim2<- do.call(data.frame,
-    approx(bin_x, y_2, xout = log(allM))
-  )
-  colnames(Lim2) <- c("log_mean", "log_VMR")
   
-# minimal example for approx function:
-# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
-
-
-plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
-points(x, y, pch=20, cex=.1, col ="#ff000090")
-lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
-lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
-lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
-lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
-#legend(x = min(log(allM[allM>0]), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue" ))
+  
+Ts <- isCD4Tcell | isCD8Tcell
 ```
-
-Pick HVGs:
-```{r}
-hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
-hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
-```
-
-
-
-
-```{r}
-# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
-# load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
-```
-
-
-
-
-
-
 
 
 
@@ -314,43 +219,61 @@ return(list(hvg_10IQR = hvg_10IQR, hvg_2IQR = hvg_2IQR))
 
 
 
-```{r}
+```{r fig.height=9, fig.width=9}
 hvgs_T   <- getHVG(rawC[, Ts])
+
 hvgs_all <- getHVG(rawC)
 ```
 
 
 
 
-# Play zone
-
-
-
-```{r}
-rawC[ names(hvgs_all$hvg_10IQR), ]
-
-cell1 <- 13
-cell2 <- 97
-genes <- names(hvgs_all$hvg_10IQR)
-genes <- genes[! is.na(genes)]
-
-C <- rawC[genes, Ts]
-C <- t( t(rawC[genes, Ts]) / cs)
-
-```
 
 
 # T cell HVGs
 ```{r}
-
-normT <- t( t(rawC[names(hvgs_T$hvg_10IQR), Ts]) / colSums(rawC[, Ts]))
-
-normT <- apply( rawC[names(hvgs_T$hvg_10IQR), Ts], 2, function(col) {
+normT <- apply( rawC[names(hvgs_T$hvg_2IQR), Ts], 2, function(col) {
   (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
 })
 
 pheatmap::pheatmap(normT[, c(sample(which(isCD4Tcell[Ts]), 300), which(isCD8Tcell[Ts]))], cluster_cols = F,
                    show_colnames =F)
+
+# pca <- irlba::irlba(scale(t(normT)), nv = 10)
+pc  <- prcomp((t(normT)), center = TRUE, scale. = TRUE)
+
+
+d5 <- dist(scale(pc$x[, 1:5], center = T, scale = T))
+d6 <- dist(scale(pc$x[, 1:6]))
+d10 <- dist(scale(pc$x[, 1:10]))
+d10_u <- dist(pc$x[, 1:10])
+
+getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
+  
+  
+distanceDF_Tcells <- function(dist) {
+  rbind(
+    data.frame(Group ="CD4_CD4",  
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD4_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD8_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F)
+   )
+}
+
+
+
+tsne_d10 <- Rtsne::Rtsne(as.matrix(d10), is_distance = TRUE)
+plot(tsne_d10$Y[,1], tsne_d10$Y[,2], pch=20, col = 1 + isCD8Tcell[Ts])
+```
+```{r}
+ggplot(distanceDF_Tcells(d10),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
 ```
 
 
@@ -377,7 +300,7 @@ s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
 PCElbowPlot(s)
 ```
 
-```{r}
+```{r, eval = F}
 s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:10, 
     resolution = 0.6, print.output = 0, save.SNN = TRUE)
 s <- RunTSNE(object = s, dims.use = 1:10, do.fast = TRUE)
@@ -386,30 +309,30 @@ s <- RunTSNE(object = s, dims.use = 1:10, do.fast = TRUE)
 ```{r}
 d_seurat <- parallelDist::parDist(s@dr$pca@cell.embeddings[, 1:10],
                                   threads = 4)
+d_seurat_scaled <- parallelDist::parDist(scale(s@dr$pca@cell.embeddings[, 1:10]),
+                                  threads = 4)
 
 tsne_d <- Rtsne::Rtsne(as.matrix(d_seurat), is_distance = TRUE)
+plot(tsne_d$Y[,1], tsne_d$Y[,2], pch=20, col = 1 + isCD8Tcell[Ts])
 ```
 ## Distances (Seurat, T cells)
-```{r}
-getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
-  
-  
-df_seurat <- rbind(
-   data.frame(Group ="CD4_CD4",  
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
-         stringsAsFactors = F),
-   data.frame(Group = "CD4_CD8", 
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F),
-   data.frame(Group = "CD8_CD8", 
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F)
-)
-```
+
 
 ```{r}
-ggplot(df_seurat,
-       aes(x = seuratDistance, stat(density), fill = Group)) + geom_histogram(position = "identity", alpha = .6)
+ggplot(distanceDF_Tcells(d_seurat),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
+```
+
+
+
+
+
+
+
+```{r}
+# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
 ```
 
 
@@ -420,12 +343,65 @@ ggplot(df_seurat,
 
 
 
+# Play zone
+
+```{r}
+s <- MakeSparse(CreateSeuratObject(rawC[, Ts]))
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+s@var.genes <- names(hvgs_T$hvg_2IQR)
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
+               genes.use = s@var.genes,
+               model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+
+d_seurat <- parallelDist::parDist(s@dr$pca@cell.embeddings[, 1:10],
+                                  threads = 4)
+
+ggplot(distanceDF_Tcells(d_seurat),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
+```
 
 
 
 
 
+```{r}
+rawC[ names(hvgs_all$hvg_10IQR), ]
 
+cell1 <- 13
+cell2 <- 97
+genes <- names(hvgs_all$hvg_10IQR)
+genes <- genes[! is.na(genes)]
+
+C <- rawC[genes, Ts]
+C <- t( t(rawC[genes, Ts]) / cs)
+
+```
+
+
+# weighted distance
+
+```{r}
+
+mat <- rawC[, Ts]
+cs  <- colSums(mat)
+mat <- mat[rownames(mat) %in% names(hvgs_T$hvg_2IQR) ,]
+
+w <- apply(mat, 1, function(k) 1 / mean(1/ (k+.5)))
+
+plot(w, col =
+(1 + rownames(mat) %in% names(hvgs_T$hvg_2IQR) ))
+
+d <- parDist(t(sqrt(w) * log( t(t(mat + .5) / cs)) ),
+               threads = 4 )
+
+ggplot(distanceDF_Tcells(d),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
+
+```
 
 
 
