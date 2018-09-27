@@ -231,6 +231,22 @@ points(v$log_Gene_Mean[hvg10],
 ```
 
 
+# Plausible gene means informed by the CITEseq dataset 
+This is useful for all kinds of simulations.
+```{r}
+plausible_means <- c( 
+  runif(575, min = .5, max = 1),
+  runif(267, min = 1,  max = 2),
+  runif(190, min = 2,  max = 10),
+  runif(70, min = 10, max = 40)  )
+# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
+# cs <- colSums(rawC)
+# normC <- t( t(rawC) *mean(cs)/ cs)
+# table(round(rowMeans(normC)))
+# rms <- rowMeans(normC)
+# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
+# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
+```
 
 
 
@@ -254,7 +270,83 @@ load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
 
 
 
-# Sveta's variance of Poisson-variance
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Play zone
+
+
+
+
+
+## Covariance of Poisson estimators
+```{r}
+# My VMR-over-mean plot implicitly estimates the true variance and mean of each
+# gene, and the vmr as well. Sveta has come up with formulas for the variances
+# of the first two estimators (mean_hat and var_hat), and from these I can compute
+# the variance of the vmr estimator. This follows the formula
+#
+#      var(log_vmr) = var(log_var) + var(-log_mean) + 2 * cov(log_var, -log_mean)
+#
+# It is interesting for me to see whether the covariance of log_var and log_mean
+# is 0 as hoped, or if it's above.
+
+meanvar_correl <- do.call(rbind, lapply(exp(-5:10), function(x) {
+
+cors <- t(replicate(5, {
+  mv <- t(replicate(100, expr = {
+  p <- rpois(8000, x)
+  c(mean(p), var(p)) } ))
+  c( lambda = x, varmean_cov = cov(log(mv[,1]), log(mv[,2]) ), var_of_var = var(log(mv[, 2])),
+     var_of_mean = var(log(mv[, 1])))
+}))
+
+}) )
+
+plot(meanvar_correl, log = "x")
+```
+
+Let's try this again with realistic values, stemming from the CITEseq dataset:
+```{r}
+# size factors:
+s_j <- colSums(rawC[, Ts])
+# means (after colsum normalization):
+mu_i <- rowMeans( t( t(rawC[, Ts]) / s_j))
+
+m <- 0.008
+
+  p <- rpois(length(s_j), lambda = m * s_j)
+  p <- p / s_j
+  c(mean = mean(p), var = var(p))
+
+```
+
+
+
+
+
+
+
+
+
+## Sveta's variance of Poisson-variance
+she derived the formula for variance of variance when we include size factors in
+our poisson models. Ultimately this will be helpful in picking HVGs as we do not
+have to rely on poisson simulations anymore, so here I simulate data to see whether
+the formula is correct.
+
 
 I simulate poisson counts:
 ```{r}
@@ -313,93 +405,6 @@ lines(v$log_Gene_Mean, )
 
 
 
-# Plausible gene means informed by the CITEseq dataset 
-This is useful for all kinds of simulations.
-```{r}
-plausible_means <- c( 
-  runif(575, min = .5, max = 1),
-  runif(267, min = 1,  max = 2),
-  runif(190, min = 2,  max = 10),
-  runif(70, min = 10, max = 40)  )
-# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
-# cs <- colSums(rawC)
-# normC <- t( t(rawC) *mean(cs)/ cs)
-# table(round(rowMeans(normC)))
-# rms <- rowMeans(normC)
-# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
-# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
-```
-
-
-
-## Power analysis
-```{r}
-n1 = 2500 # number of cells in population 1
-n2 = 250 # number of cells in population 2
-nP = n1+n2   # sum of all cells (nP = n for poisson simulation)
-foldchange = 2
-
-fc <- as.data.frame(do.call(rbind,
-lapply(plausible_means, function(m) {
-  x <- c(rpois(n1, m), rpois(n2, foldchange * m))
-  c(mean = mean(x), var = var(x), vmr = var(x) / mean(x))
-})
-) )
-
-P <- as.data.frame(do.call(rbind,
-lapply(plausible_means, function(m) {
-  x <- rpois(nP, m)
-  c(mean = mean(x), var = var(x), vmr = var(x) / mean(x))
-})
-) )
-
-plot(fc$mean, fc$vmr, log = "xy", pch = 20, cex=.1,
-     ylim = range(c(fc$vmr, P$vmr)),
-     xlim = range(c(fc$mean, P$mean)))
-points(P$mean,   P$vmr, pch=20, cex=.1, col = "red")
-
-```
-
-
-
-
-
-
-
-
-
-# Play zone
-
-
-
-
-
-## Covariance of Poisson estimators
-```{r}
-# My VMR-over-mean plot implicitly estimates the true variance and mean of each
-# gene, and the vmr as well. Sveta has come up with formulas for the variances
-# of the first two estimators (mean_hat and var_hat), and from these I can compute
-# the variance of the vmr estimator. This follows the formula
-#
-#      var(log_vmr) = var(log_var) + var(-log_mean) + 2 * cov(log_var, -log_mean)
-#
-# It is interesting for me to see whether the covariance of log_var and log_mean
-# is 0 as hoped, or if it's above.
-
-meanvar_correl <- do.call(rbind, lapply(exp(-5:10), function(x) {
-
-cors <- t(replicate(5, {
-  mv <- t(replicate(100, expr = {
-  p <- rpois(8000, x)
-  c(mean(p), var(p)) } ))
-  c( lambda = x, varmean_cov = cov(log(mv[,1]), log(mv[,2]) ), var_of_var = var(log(mv[, 2])),
-     var_of_mean = var(log(mv[, 1])))
-}))
-
-}) )
-
-plot(meanvar_correl, log = "x")
-```
 
 
 
@@ -410,6 +415,18 @@ plot(meanvar_correl, log = "x")
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+## seurat stuff
 
 
 
@@ -442,7 +459,8 @@ ggplot(distanceDF_Tcells(d_seurat),
 
 
 # weighted distance
-
+Simon and I play around with this but find it's not very powerful
+yet.
 ```{r}
 
 mat <- rawC[, Ts]
