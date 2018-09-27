@@ -129,7 +129,7 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
   
   # Simon wants to filter out low-abundance genes. A very conservative cutoff is
   # the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
-  threshold <- mean(c(1/500,  rep(0, ncol(mat[, Ts])-1)))
+  threshold <- mean(c(1/500,  rep(0, ncol(mat)-1)))
     print("Simulate Poisson Counts...")
   # estimate each gene's true mean and var - for this we normalize with library size:
     normC <- t( t(mat) / cs)
@@ -400,6 +400,8 @@ cors <- t(replicate(5, {
 
 plot(meanvar_correl, log = "x")
 ```
+
+
 
 
 
