@@ -17,8 +17,10 @@ output:
 # Load Packages
 
 ```{r}
+library(ggplot2)
 library(pbmcapply) # parallelization
 library(quantreg)  # quantile regression with rq.wfit
+library(parallelDist)
 ```
 
 
@@ -41,6 +43,21 @@ rawC <- rawC[grepl("HUMAN", rownames(rawC)), ! is_mouse]
 prot <- prot[, ! is_mouse]
 ```
 
+
+
+
+# RNA data: normalization
+
+```{r}
+normC <- apply( rawC, 2, function(col) {
+  (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
+})
+
+```
+
+
+
+
 # Protein data: normalization and Cell identities
 ```{r}
 # simplifying Seurat's code to compute Centered Log Ratio (CLR):
@@ -49,11 +66,22 @@ norm_prot <- apply(prot, 1, function(x) {
                           (exp(sum(log1p((x)[x > 0]), na.rm = TRUE)/length(x + 1))) ) })
 
 
- # exclude NK and monos: 
-  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1)
+ # exclude NK and monos:
+  plot(norm_prot[, "CD11c"], norm_prot[, "CD56"], pch =20, cex=.1, 
+       main = "CITEseqs protein data\nto exclude NKs (CD56) and myeloid cells (CD11c)")
+  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
+ 
+# exclude erythrocytes. No good protein marker available, we use RNA for it:
+  not_ery <- normC["HUMAN_HBB", ]  < .05  &
+             normC["HUMAN_HBG2", ] < .05 &
+             normC["HUMAN_HBA1", ] < .04 
+# same for platelets / megakaryocytes:
+  not_platelet <- normC["HUMAN_GP9", ] < .005 &
+                  normC["HUMAN_PF4", ] < .005 &
+                  normC["HUMAN_PPBP", ] < .005 
+  
   
 # B and T cells:
-  lin_neg <- norm_prot[, "CD56"] < 1.1   & norm_prot[, "CD11c"] < 1 
   has_B_markers <- norm_prot[, "CD19"] > 2  &  norm_prot[, "CD3"] < .5
   has_T_markers <- norm_prot[, "CD19"] < 1.5  &  norm_prot[, "CD3"] > 1
   plot(norm_prot[, "CD3"], norm_prot[, "CD19"], pch =20, col =
@@ -62,8 +90,8 @@ norm_prot <- apply(prot, 1, function(x) {
 
   
     
-  isBcell <- has_B_markers & lin_neg
-  isTcell <- has_T_markers & lin_neg
+  isBcell <- has_B_markers & lin_neg & not_ery & not_platelet
+  isTcell <- has_T_markers & lin_neg & not_ery & not_platelet
 
   
   
@@ -75,249 +103,603 @@ norm_prot <- apply(prot, 1, function(x) {
   plot(norm_prot[, "CD4"], norm_prot[, "CD8"], pch=20, cex=.4,
        col = rgb(0, isCD4Tcell, isCD8Tcell), 
        main = "CD4 and CD8 T cells\nselected amongst T cells picked above")  
-```
-
-
-# Custom (T cells)
-```{r}
+  
+  
 Ts <- isCD4Tcell | isCD8Tcell
-cs <- colSums(rawC[, Ts])
-
-# Simon wants to filter out low-abundance genes. A very conservative cutoff is
-# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0.
-threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
-
-```
-
-
-## RNA data: ColSums and Poisson raw counts
-```{r}
-
-# estimate each gene's true mean by normalizing with library size first:
-normC <- t( t(rawC[, Ts]) / cs)
-normC <- normC[rowMeans(normC) > threshold,]
-allM <- apply(normC, 1, mean)
-allV <- apply(normC, 1, var)
-
-
-# simulate poisson raw counts for our data:
-library(pbmcapply)
-nc <- ncol(rawC[, Ts])
-pCounts <- do.call(rbind,
-                   pbmclapply(allM, function(mu) {
-                     rpois(nc, lambda = mu * cs)}, mc.cores=4) )
-rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
-colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
-
-pCounts_small <- Matrix::Matrix(
-  pCounts[sample(1:nrow(pCounts), 8000), sample(1:ncol(pCounts), 1000)], sparse=T)
-rawC_small <- Matrix::Matrix(
-  rawC[sample(1:nrow(rawC), 8000), sample(1:ncol(rawC), 1000)], sparse=T)
 ```
 
 
 
-## Select HVGs
 
-Estimate poisson mean-var:
+# VMRstats function
 ```{r}
-normP <- t( t(pCounts) / cs)
-allMP <- apply(normP, 1, mean)
-allVP <- apply(normP, 1, var)
-```
+## bug report for below function(s):
+  #
+  #  This function is terrible coding practice; rewrite it completely!
+  #
+  #  rowMeans(rawC) and allM is redundant computation, that's uncritical but not elegant
+  #
+  #  everytime you run it, different genes get selected due to stochastic poisson.
+  #  We'll probably find an analytic solution eventually anyways that should fix it.
 
+                                                  ##
 
-Local quantile fit:
-```{r}
-# ease of typing:
-x <- log(allMP)
-y <- log(allVP / allMP)
-
-
-# going over all x takes too long:
-xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_n <- 75
-bin_x <- seq(xrange[1], xrange[2], length.out = bin_n)
-
-# Simon's local quantile fit (faster with `mm` matrix)
-library(quantreg)
-mm <- cbind( 1, x, x^2 )
-yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
-  {
-      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
-      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
-      c(bin_x = xp,
-        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
-        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
-   } )  )
-
-
-
-# arbitrarily choose 2x IQR and 10x IQR as possible cut-offs:
-IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
-y_2 <-  yfit[, "median"] + 2 * IQR
-y_10 <- yfit[, "median"] + 10* IQR
-
-# interpolate to all points to get poisson limit for each gene:
-  Lim10<- do.call(data.frame,
-    approx(bin_x, y_10, xout = log(allM))
-  )
-  colnames(Lim10) <- c("log_mean", "log_VMR")
-
-# same for less stringent cutoff:
-  Lim2<- do.call(data.frame,
-    approx(bin_x, y_2, xout = log(allM))
-  )
-  colnames(Lim2) <- c("log_mean", "log_VMR")
+VMRstats <- function(mat = rawC, nbin_qreg = 75) {
+  cs <- colSums(mat) 
   
-# minimal example for approx function:
-# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
-
-
-plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
-points(x, y, pch=20, cex=.1, col ="#ff000090")
-lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
-lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
-lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
-lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
-#legend(x = min(log(allM[allM>0]), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue" ))
-```
-
-Pick HVGs:
-```{r}
-hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
-hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
-```
-
-
-
-
-```{r}
-# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
-# load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
-```
-
-
-
-
-
-
-
-
-
-
-# getHVG function
-```{r}
-## getHVG bug report:
-#
-#  This function is terrible coding practice; rewrite it completely!
-#
-#  rowMeans(rawC) and allM is redundant computation, that's uncritical but not elegant
-#
-#  everytime you run it, different genes get selected due to stochastic poisson.
-#  We'll probably find an analytic solution eventually anyways that should fix it.
-
-
-getHVG <- function(mat = rawC, nbin_qreg = 75) {
-##                                                        ##
-##   terrible hardcoded function, does the job for now.   ##
-##                                                        ##
-
-cs <- colSums(mat) 
-
-# Simon wants to filter out low-abundance genes. A very conservative cutoff is
-# the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
-threshold <- mean(c(1/500,  rep(0, ncol(rawC[, Ts])-1)))
-   # used by rawC
-   # also used by Poisson raw counts below
-
-# estimate each gene's true mean and var - for this we normalize with library size:
-  normC <- t( t(mat) / cs)
-  normC <- normC[rowMeans(normC) > threshold,]
-  allM <- apply(normC, 1, mean)
-  allV <- apply(normC, 1, var)
-
-
-# simulate poisson raw counts relevent to our data (i.e. using allM):
-  nc <- ncol(mat)
-  pCounts <- do.call(rbind,
-                     pbmclapply(allM, function(mu) {rpois(nc, lambda = mu * cs)},
-                                mc.cores=4) )
-  # superfluous, here because I used to punch these into Seurat:
-  rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
-  colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
-
-# as with real counts:
-  normP <- t( t(pCounts) / cs)
-  allMP <- apply(normP, 1, mean)
-  allVP <- apply(normP, 1, var)
-  # x,y for ease of typing. threshold also prevents -Inf values, defensive progr.:
-  x <- log(allMP[allMP > threshold])
-  y <- log(allVP[allMP > threshold] / allMP[allMP > threshold])
-
-
-# going over all x takes long, so we fit the VMR-mean relationship in bins:
-xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
-bin_x <- seq(xrange[1], xrange[2], length.out = nbin_qreg)
-# random poisson by chance might not cover the extreme values:
-bin_x <- c(log(min(allM)), bin_x, log(max(allM)))
-
-# Simon's local quantile fit (faster using matrix notation, `mm`)
-mm <- cbind( Intercept = 1, X = x, X2 = x^2 )
-yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
-  {
-      fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
-      fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
-      c(bin_x = xp,
-        q75= fit$coefficients %*% c( 1, xp, xp^2 ),
-        median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
-   } )  )
-
-
-# arbitrarily choose 2x IQRs and 10x IQRs as possible cut-offs.
-# I naively estimate the IQR from median and .75-quantile, good enough for now:
-IQR <- 2 * (yfit[, "q75"] - yfit[, "median"])
-y_2 <-  yfit[, "median"] + 2 * IQR
-y_10 <- yfit[, "median"] + 10* IQR
-
-# interpolate to all points to get poisson limit for each gene:
-  Lim10<- do.call(data.frame,
-    approx(bin_x, y_10, xout = log(allM))
-  )
-  colnames(Lim10) <- c("log_mean", "log_VMR")
-
-# same for less stringent cutoff:
-  Lim2<- do.call(data.frame,
-    approx(bin_x, y_2, xout = log(allM))
-  )
-  colnames(Lim2) <- c("log_mean", "log_VMR")
+  # Simon wants to filter out low-abundance genes. A very conservative cutoff is
+  # the mean resulting from 1 small cell (nUMI = 500) having an UMI of 1, the rest 0s:
+  threshold <- mean(c(1/500,  rep(0, ncol(mat)-1)))
+    print("Simulate Poisson Counts...")
+  # estimate each gene's true mean and var - for this we normalize with library size:
+    normC <- t( t(mat) / cs)
+    normC <- normC[rowMeans(normC) > threshold,]
+    allM <- apply(normC, 1, mean)
+    allV <- apply(normC, 1, var)
   
-# minimal example for approx function:
-# approx(1:10, c(15,10,10,15,10,10,10,15,15,15), xout = seq(1,10, by=.3))
+  
+  # simulate poisson raw counts relevant to our data (i.e. using allM):
+    nc <- ncol(mat)
+    pCounts <- do.call(rbind,
+                       pbmclapply(allM, function(mu) {rpois(nc, lambda = mu * cs)},
+                                  mc.cores=4) )
+    # superfluous, here because I used to punch these into Seurat:
+    rownames(pCounts) <- paste0("poisson_", 1:nrow(pCounts))
+    colnames(pCounts) <- paste0("Cell_", 1:ncol(pCounts))
+  
+    print("Normalize Poisson Counts...")
+  # as with real counts:
+    normP <- t( t(pCounts) / cs)
+    allMP <- apply(normP, 1, mean)
+    allVP <- apply(normP, 1, var)
+    # x,y for ease of typing. threshold also prevents -Inf values, defensive progr.:
+    x <- log(allMP[allMP > threshold])
+    y <- log(allVP[allMP > threshold] / allMP[allMP > threshold])
+  
+  print("Fit VMR-mean relationship...")
+  # going over all x takes long, so we fit the VMR-mean relationship in bins:
+  xrange <- range(x) # log(c(max(1e-9, min(allM), min(allMP)), max(max(allM), max(allMP))))
+  bin_x <- seq(xrange[1], xrange[2], length.out = nbin_qreg)
+  # random poisson by chance might not cover the extreme values:
+  bin_x <- c(log(min(allM)), bin_x, log(max(allM)))
+  
+  # Simon's local quantile fit (faster using matrix notation, `mm`)
+  mm <- cbind( Intercept = 1, X = x, X2 = x^2 )
+  yfit <- do.call(rbind, pbmclapply( bin_x, function(xp)
+    {
+        fit        <- rq.wfit( mm, y, .75, dnorm( x, mean=xp, sd=2 ) )
+        fit_median <- rq.wfit( mm, y, .5, dnorm( x, mean=xp, sd=2 ) )
+        c(bin_x = xp,
+          q75= fit$coefficients %*% c( 1, xp, xp^2 ),
+          median = fit_median$coefficients %*% c( 1, xp, xp^2 ))
+    } )  )
+  
+  # interpolate Poisson median and quantile for each gene: 
+  all_y<- do.call(data.frame,
+                 c( 
+                   poisson_medians <- approx(x = yfit[, "bin_x"],
+                                             y = yfit[, "median"],
+                                             xout = log(allM)),
+                   poisson_q75     <- approx(x = yfit[, "bin_x"],
+                                             y = yfit[, "q75"],
+                                             xout = log(allM)) ) )
+  # summarize final result:
+  df <- data.frame(
+      log_Gene_Mean         = all_y[, 1],
+      log_Gene_VMR          = log(allV / allM),
+      log_PoissonVMR_median = all_y[, 2],
+      log_PoissonVMR_q75    = all_y[, 4],
+      IQR_of_logged_VMR         = 2 * (all_y[, 4] - all_y[, 2]),
+      row.names = rownames(all_y)
+    )
+  df$aboveP  <- (df$log_Gene_VMR - df$log_PoissonVMR_median) /
+    df$IQR_of_logged_VMR
+  df <- df[order(df$aboveP, decreasing = TRUE), ]
+  
+  return(df)
+  } 
 
 
-plot(log(allM), log(allV/allM), pch=20, cex=.1, col = "#00000090")
-points(x, y, pch=20, cex=.1, col ="#ff000090")
-lines( bin_x, yfit[, "q75"], lwd = 2, col="orange" )
-lines( bin_x, yfit[, "median"], lwd = 2, col="magenta" )
-lines( Lim2[order(Lim2[, "log_mean"]), "log_mean"], Lim2[order(Lim2[, "log_mean"]), "log_VMR"], lwd = 2, col="blue")
-lines( Lim10[order(Lim10[, "log_mean"]), "log_mean"], Lim10[order(Lim10[, "log_mean"]), "log_VMR"], lwd = 2, col="green")
-legend(x = min(log(allM), na.rm=T), y = max(log(allV/allM), na.rm = T), legend = c("median", "Q75", "median+2IQRs", "median+10IQRs"), lwd=1, col = c( "magenta","orange", "blue", "green" ))
-
-
-hvg_10IQR <- allV[ log(allV / allM ) > Lim10$log_VMR ]
-hvg_2IQR <- allV[ log(allV / allM ) > Lim2$log_VMR ]
-return(list(hvg_10IQR = hvg_10IQR, hvg_2IQR = hvg_2IQR))
+getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
+  # returns genes that are more than n IQRs away (default: n = 10).
+  hvg  <- vmrstats$log_Gene_VMR >
+         vmrstats$log_PoissonVMR_median + IQRs * vmrstats$IQR_of_logged_VMR
+  return(vmrstats[hvg, ])
 }
 ```
 
 
 
 
+
+
+# Plausible gene means informed by the CITEseq dataset 
+This is useful for all kinds of simulations.
 ```{r}
-hvgs_T   <- getHVG(rawC[, Ts])
-hvgs_all <- getHVG(rawC)
+plausible_means <- c( 
+  runif(575, min = .5, max = 1),
+  runif(267, min = 1,  max = 2),
+  runif(190, min = 2,  max = 10),
+  runif(70, min = 10, max = 40)  )
+# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
+# cs <- colSums(rawC)
+# normC <- t( t(rawC) *mean(cs)/ cs)
+# table(round(rowMeans(normC)))
+# rms <- rowMeans(normC)
+# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
+# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+# Curse of dimensionality
+Here I will pick more and more HVGs to show the distances within
+and between CD4 and CD8 T cells become better and worse.
+
+## Useful functions:
+```{r}
+
+anscNorm <- function(rawCounts) {
+      apply( rawCounts, 2, function(col) {
+                     (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col)) } )
+} 
+
+library(irlba)
+pcDist <- function(counts, npc = 30, do.fast = TRUE) {
+  # computes cell-cell distances on the first 30 PCs
+  # input should be normalized
+  # each gene is scaled
+  # the PCs are not scaled to give less and less weight to higher PCs
+  if(do.fast){
+    print("computing irlba")
+     pc <- irlba::irlba(t(scale(t(counts))), nv = npc)
+     # irlba gives normalized PCs, so I re-weight by the PC's overall variance:
+     embeddings <- pc$v %*% diag(pc$d)
+     d  <- dist(embeddings)
+  } else {
+     pc  <- prcomp((t(counts)), center = TRUE, scale. = TRUE)
+     d   <- dist(pc$x[, 1:npc])
+  }
+  return(d) }
+
+
+getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
+  
+  
+distanceDF_Tcells <- function(dist) {
+  rbind(
+    data.frame(Group ="CD4_CD4",  
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD4_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD8_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F)
+   )
+}
+
+distanceDF <- function(dist, idx1, idx2, name1, name2) {
+  rbind(
+    # both groups amongst themselves (only keep upper half of matrix)
+    data.frame(Group = paste(name1, name1, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx1, idx1])),
+    data.frame(Group = paste(name2, name2, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx2, idx2])),
+    # between the two groups (keep all values)
+    data.frame(Group = paste(name1, name2, sep = "_"),
+               Distance = as.numeric( as.matrix(dist)[idx1, idx2]))
+  )
+}
+
+
+histo_distance_group <- function(distanceDF){
+  ggplot(distanceDF,
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1) }
+
+
+
+# get n nearest neighbors
+ NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
+   t(apply(dists, 1,
+           function(ds) which(ds < quantile(ds, n_neighbors / ncol(dists), names = F) ) ) )
+ }
+```
+
+## B vs T cells: all ok
+```{r}
+vmr <- VMRstats(rawC[, c(which(Ts), which(isBcell))])
+norm1 <- anscNorm(rawC[, c(which(Ts), which(isBcell))])
+
+
+```
+
+Histogram of distances is unclear, while tSNE and heatmaps can show the 
+difference between B and T cells quite well:
+```{r}
+d <- pcDist(norm1[rownames(head(vmr, n = 900)), ])
+
+# histogram:
+ smallddf <- distanceDF(d, 1:sum(Ts), 1:sum(isBcell), "T", "B") %>%
+   group_by(Group) %>% sample_n(30000)
+ histo_distance_group(smallddf)
+ ggplot(smallddf)+stat_ecdf(aes(Distance, colour = Group)) +
+   ggtitle("ECDF\nEucl. Dist on PCs 1-30 on 900 HVG")
+
+# tSNE: 
+ tsn <- Rtsne::Rtsne(d, is_distance = T)
+ plot(tsn$Y, pch = 20, col = rgb( norm1["HUMAN_MS4A1", ] > .02, 
+                                  norm1["HUMAN_CD8B", ] > .02, 
+                                  norm1["HUMAN_CD3E", ] > .01) ,
+      asp = 1, xlab = "tSNE 1", ylab = "tSNE 2",
+      main = "red: expresses MS4A1\nblue: expresses CD3E\nteal: expresses CD3E & CD8B")
+```
+
+Let's find a better figure of merit: 
+```{r} 
+
+
+
+identities <- as.factor(c( rep("T", sum(Ts)), rep("B", sum(isBcell)) ))
+
+for(ng in 2^(5:13)) {
+  print(ng)
+  fast <- ifelse(ng > 500, TRUE, FALSE)
+  
+  d <- pcDist(norm1[rownames(head(vmr, n = ng)), ], do.fast = fast)
+  nns <- NNindices(as.matrix(d), n_neighbors = 10 )
+  n_Ts <- apply(nns, 1, function(ids) sum(identities[ids] == "T"))
+  
+  # output nice plots:
+   par(mfrow = c(1, 2)) 
+   plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+        ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+        main = ng) 
+   points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   hist(n_Ts, xlab = "T cells amongst 10 NNs", main = ng,
+        breaks = -.5+0:11, ylim = c(0, 800) )
+ 
+}
+
+
+
+
+
+
+
+ 
+```
+
+
+
+## CD4 vs CD8 T cells - no regressing
+
+```{r}
+sel <- c(which(isCD4Tcell), which(isCD8Tcell))
+identities <- c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)) )
+
+vmr <- VMRstats(rawC[, sel] )
+norm2 <- log( t(t(rawC[, sel]) * median(colSums(rawC[, sel])) /
+                  colSums(rawC[, sel])  ) + 1 )
+
+
+
+for(ng in 2^(5:14)) {
+  print(ng)
+  fast <- ifelse(ng > 500, TRUE, FALSE)
+  
+  # d <- pcDist(norm2[rownames(head(vmr, n = ng)), ], do.fast = fast)
+  d <- parDist(t(norm2[rownames(head(vmr, n = ng)), ]) )
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_euclidean/" ,      
+        "NNs_PCs1to30_hvgs1to", ng, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(ng))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+## CoD on PCs
+Curse of dimensionality (CoD)
+```{r}
+
+ pc  <- prcomp((t(norm2[rownames(vmr[1:100,]), ])), center = TRUE, scale. = TRUE)
+ d   <- dist(pc$x[, 1:100])
+ 
+ d2 <- dist(t(norm2[rownames(vmr[1:100, ]), ] ))
+ 
+ idx<- c(sample(which(isCD4Tcell[Ts]), 100), sample(which(isCD8Tcell[Ts]), 100))
+```
+
+```{r}
+sel <- c(which(isCD4Tcell), which(isCD8Tcell))
+identities <- c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)) )
+
+vmr <- VMRstats(rawC[, sel] )
+norm2 <- log( t(t(rawC[, sel]) * median(colSums(rawC[, sel])) /
+                  colSums(rawC[, sel])  ) + 1 )
+
+pc <- irlba::irlba(t(scale(t(norm2[rownames(vmr), ]))),
+                         nv = 40)
+embeddings <- pc$v %*% diag(pc$d)
+     d  <- dist(embeddings)
+# tmp <- Rtsne::Rtsne(d, is_distance = TRUE)  
+plot(tmp$Y, pch = 20, col = c(rep(1, sum(isCD4Tcell)), rep(2, sum(isCD8Tcell))),
+     asp=1)
+
+for(np in c(1:13 * 3)) {
+  print(np)
+  
+  d <- dist(embeddings[, 1:np])
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_allGenes_varyPC/" ,      
+        "NNs_lognormAllGenes_PCs1to", np, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(np))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+
+
+
+
+## CoD on Cells
+Curse of dimensionality (CoD): let's take all cells, this should also make
+it harder to tell CD4 and CD8 T cells apart.
+
+```{r}
+# vmr <- VMRstats(rawC )
+norm3 <- log( t(t(rawC) * median(colSums(rawC)) /
+                  colSums(rawC)  ) + 1 )
+
+pc <- irlba::irlba(t(scale(t(norm3[rownames(vmr), ]))),
+                         nv = 40)
+embeddings <- pc$v %*% diag(pc$d)
+
+
+d  <- dist(embeddings[, 1:28])
+tmp <- Rtsne::Rtsne(d, is_distance = TRUE)  
+plot(tmp$Y, pch = 20, col = rgb(.5+.5*isCD4Tcell, .5+.5*isCD8Tcell, 0),
+     asp=1)
+
+for(np in c(1:39)) {
+  print(np)
+  
+  d <- dist(embeddings[, 1:np])
+  
+  nn4 <- NNindices(as.matrix(d)[isCD4Tcell, ] )
+  nn4 <- apply(nn4, 1, function(drow) sum(isCD4Tcell[drow]))
+  
+  nn8 <- NNindices(as.matrix(d)[isCD8Tcell, ] )
+  nn8 <- apply(nn8, 1, function(drow) sum(isCD8Tcell[drow]))
+ 
+   
+  df <- rbind(data.frame(Celltype = "CD4", NNsameType = unname(nn4) ),
+               data.frame(Celltype = "CD8", NNsameType = unname(nn8) ) )
+  df$NNsameType =  factor(df$NNsameType, levels = 0:10)
+  
+  
+  
+  cd4 <-  data.frame(table(df[df$Celltype== "CD4",
+                        "NNsameType"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(df[df$Celltype== "CD8",
+                        "NNsameType"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(isCD4Tcell),
+                       cd8$Freq / sum(isCD8Tcell) ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_allGenes_allCells_varyPC/" ,      
+        "NNs_lognormAllGenes_PCs1to", np, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(np))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## CD4 vs CD8 T cells - regress nUMIs
+
+```{r}
+library(Seurat)
+s <- MakeSparse(CreateSeuratObject(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]))
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
+               genes.use = rownames(vmr[1:4100,]), use.umi = T,
+               model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
+```
+
+
+# Savepoint
+
+```{r}
+# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/messySeurat_s.rda")
+library(ggplot2)
+library(pbmcapply) # parallelization
+library(quantreg)  # quantile regression with rq.wfit
+library(parallelDist)
+library(tidyverse)
+load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/messySeurat_s.rda")
+```
+
+
+
+
+
+
+
+```{r}
+
+for(ng in 2^(6:14)) {
+  print(ng)
+ seurat <- RunPCA(s, pc.genes = rownames(head(vmr, n = ng)), pcs.compute = 30,
+            do.print = F)
+   d    <- parallelDist::parDist(seurat@dr$pca@cell.embeddings[, 1:30],
+                                  threads = 4)
+ 
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  # below, table will note empty levels only if it's a factor:
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+  fn <- paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "withRegressingUMIs/",
+        "NNs_PCs1to30_hvgs1to", ng, ".png")
+  # png(fn, width = 1000, height = 800, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  ggplot2::ggsave(fn, ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion")
+  )
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   #dev.off()
+ 
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -326,31 +708,110 @@ hvgs_all <- getHVG(rawC)
 
 
 
+
+
+## Covariance of Poisson estimators
 ```{r}
-rawC[ names(hvgs_all$hvg_10IQR), ]
+# My VMR-over-mean plot implicitly estimates the true variance and mean of each
+# gene, and the vmr as well. Sveta has come up with formulas for the variances
+# of the first two estimators (mean_hat and var_hat), and from these I can compute
+# the variance of the vmr estimator. This follows the formula
+#
+#      var(log_vmr) = var(log_var) + var(-log_mean) + 2 * cov(log_var, -log_mean)
+#
+# It is interesting for me to see whether the covariance of log_var and log_mean
+# is 0 as hoped, or if it's above.
 
-cell1 <- 13
-cell2 <- 97
-genes <- names(hvgs_all$hvg_10IQR)
-genes <- genes[! is.na(genes)]
+meanvar_correl <- do.call(rbind, lapply(exp(-5:10), function(x) {
 
-C <- rawC[genes, Ts]
-C <- t( t(rawC[genes, Ts]) / cs)
+cors <- t(replicate(5, {
+  mv <- t(replicate(100, expr = {
+  p <- rpois(8000, x)
+  c(mean(p), var(p)) } ))
+  c( lambda = x, varmean_cov = cov(log(mv[,1]), log(mv[,2]) ), var_of_var = var(log(mv[, 2])),
+     var_of_mean = var(log(mv[, 1])))
+}))
+
+}) )
+
+plot(meanvar_correl, log = "x")
+```
+
+Let's try this again with realistic values, stemming from the CITEseq dataset:
+```{r}
+# size factors:
+s_j <- colSums(rawC[, Ts])
+# means (after colsum normalization):
+mu_i <- rowMeans( t( t(rawC[, Ts]) / s_j))
+
+m <- 0.008
+
+  p <- rpois(length(s_j), lambda = m * s_j)
+  p <- p / s_j
+  c(mean = mean(p), var = var(p))
 
 ```
 
 
-# T cell HVGs
+
+
+
+
+
+
+
+## Sveta's variance of Poisson-variance
+she derived the formula for variance of variance when we include size factors in
+our poisson models. Ultimately this will be helpful in picking HVGs as we do not
+have to rely on poisson simulations anymore, so here I simulate data to see whether
+the formula is correct.
+
+
+I simulate poisson counts:
 ```{r}
+cs <- colSums(rawC[, Ts]) 
+# estimate each gene's true mean and var - for this we normalize with library size:
+estMeans <- apply(t( t(rawC[ rowMeans(rawC[, Ts]) > 0.00530, Ts]) / cs), 1, mean)
+estMeans <- sample(estMeans, 1000)
 
-normT <- t( t(rawC[names(hvgs_T$hvg_10IQR), Ts]) / colSums(rawC[, Ts]))
+# simulate poisson raw counts relevant to our data (i.e. using allM):
+    nc <- ncol(rawC[, Ts])
+   
+    
+    poisson_replicates <- replicate(100, { 
+    singlePoisson <- do.call(rbind,
+                           lapply(estMeans, function(mu) rpois(nc, lambda = mu * cs))
+                           )
+    
+    apply( t(singlePoisson) / cs, 2, var)} )
+    
+    
+    
+# Sveta's variance estimation:
+    var_theo <- function(mu, colsums = colSums(rawC[, Ts])) {
+     N   <- length(colsums)
+     psi <- sum(1/colsums) / N
+     
+     vt <- 2/(N-1)/(N-1) * mu^2 * psi^2 +
+           (2*N-4)/(N*(N-1)^2) * mu * mu * sum(1/(colsums^2)) +
+           mu / N / N * sum(1/(colsums^3))
+    }
 
-normT <- apply( rawC[names(hvgs_T$hvg_10IQR), Ts], 2, function(col) {
-  (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
-})
 
-pheatmap::pheatmap(normT[, c(sample(which(isCD4Tcell[Ts]), 300), which(isCD8Tcell[Ts]))], cluster_cols = F,
-                   show_colnames =F)
+plot(apply(poisson_replicates, 1, var), var_theo(estMeans, cs), log = "xy")
+
+all.equal(apply(poisson_replicates, 1, var), var_theo(estMeans, cs))
+
+
+```
+
+```{r}
+poisson_sds <- sqrt( var_theo(exp(v$log_Gene_Mean), colSums(rawC[, Ts])) )
+
+plot(v$log_Gene_Mean, v$log_Gene_VMR, pch = 20, cex=.1, col = "#00000090")
+lines(v$log_Gene_Mean, v$log_PoissonVMR_median,
+      lwd = 1.5, col = "orange")
+lines(v$log_Gene_Mean, )
 ```
 
 
@@ -359,73 +820,85 @@ pheatmap::pheatmap(normT[, c(sample(which(isCD4Tcell[Ts]), 300), which(isCD8Tcel
 
 
 
-# Seurat: T cells
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## seurat stuff
+
+
+
+
+
+
+
 
 ```{r}
-library(Seurat)
-s <- CreateSeuratObject(rawC[, Ts])
-s <- MakeSparse(s)
+s <- MakeSparse(CreateSeuratObject(rawC[, Ts]))
 s <- NormalizeData(s)
 s <- FindVariableGenes(s, display.progress = F)
-length(s@var.genes)
-```
-```{r}
-s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
+s@var.genes <- names(hvgs_T$hvg_2IQR)
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
+               genes.use = s@var.genes, use.umi = T,
+               model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
 s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
-# s <- JackStraw(object = s, num.replicate = 100, display.progress = FALSE)
-# JackStrawPlot(object =s, PCs = 1:12)
-PCElbowPlot(s)
-```
 
-```{r}
-s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:10, 
-    resolution = 0.6, print.output = 0, save.SNN = TRUE)
-s <- RunTSNE(object = s, dims.use = 1:10, do.fast = TRUE)
-```
-
-```{r}
 d_seurat <- parallelDist::parDist(s@dr$pca@cell.embeddings[, 1:10],
                                   threads = 4)
 
-tsne_d <- Rtsne::Rtsne(as.matrix(d_seurat), is_distance = TRUE)
+ggplot(distanceDF_Tcells(d_seurat),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
 ```
-## Distances (Seurat, T cells)
+
+
+
+
+
+
+# weighted distance
+Simon and I play around with this but find it's not very powerful
+yet.
 ```{r}
-getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
-  
-  
-df_seurat <- rbind(
-   data.frame(Group ="CD4_CD4",  
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
-         stringsAsFactors = F),
-   data.frame(Group = "CD4_CD8", 
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F),
-   data.frame(Group = "CD8_CD8", 
-         seuratDistance = getUpper( as.matrix(d_seurat)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F)
-)
+
+mat <- rawC[, Ts]
+cs  <- colSums(mat)
+mat <- mat[rownames(mat) %in% names(hvgs_T$hvg_2IQR) ,]
+
+w <- apply(mat, 1, function(k) 1 / mean(1/ (k+.5)))
+
+plot(w, col =
+(1 + rownames(mat) %in% names(hvgs_T$hvg_2IQR) ))
+
+d <- parDist(t(sqrt(w) * log( t(t(mat + .5) / cs)) ),
+               threads = 4 )
+
+ggplot(distanceDF_Tcells(d),
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
+
 ```
-
-```{r}
-ggplot(df_seurat,
-       aes(x = seuratDistance, stat(density), fill = Group)) + geom_histogram(position = "identity", alpha = .6)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -454,80 +927,6 @@ xf <- pCounts["poisson_1305", ]  / cs
 ```
 
 I find this worrying.
-
-
-# Seurat on poisson genes
-
-```{r}
-library(Seurat)
-
-s <- CreateSeuratObject(pCounts)
-s <- NormalizeData(s)
-s <- FindVariableGenes(s, display.progress = F)
-length(s@var.genes)
-```
-Seurat finds 600 HVGs where there is no biological information at all.
-```{r}
-s <- ScaleData(object = s, vars.to.regress = c("nUMI"))
-s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
-s <- JackStraw(object = s, num.replicate = 100, display.progress = FALSE)
-JackStrawPlot(object =s, PCs = 1:12)
-```
-```{r}
-s <- FindClusters(object = s, reduction.type = "pca", dims.use = 1:7, 
-    resolution = 0.6, print.output = 0, save.SNN = TRUE)
-s <- RunTSNE(object = s, dims.use = 1:7, do.fast = TRUE)
-TSNEPlot(s)
-```
-
-# Monocle on Poisson genes
-
-```{r}
-library(monocle)
-pd <- new("AnnotatedDataFrame", data = data.frame(
-  cellID = colnames(pCounts_small),
-  row.names = colnames(pCounts_small)))
-fd <- new("AnnotatedDataFrame",
-          data.frame(gene_short_name= rownames(pCounts_small),
-                 row.names=rownames(pCounts_small)))
-cds_p <- newCellDataSet(Matrix(pCounts_small, sparse = T), phenoData = pd, featureData = fd,
-                      expressionFamily = negbinomial.size())
-
-pd <- new("AnnotatedDataFrame", data = data.frame(
-  cellID = colnames(rawC_small),
-  row.names = colnames(rawC_small)))
-fd <- new("AnnotatedDataFrame",
-          data.frame(gene_short_name= rownames(rawC_small), 
-                 row.names=rownames(rawC_small)))
-cds  <- newCellDataSet(Matrix(rawC_small, sparse = T), phenoData = pd, featureData = fd,
-                      expressionFamily = negbinomial.size())
-
-
-
-
-cds <- estimateSizeFactors(cds); cds <- estimateDispersions(cds)
-cds_p <- estimateSizeFactors(cds_p); cds_p <- estimateDispersions(cds_p)
-disp_table <- dispersionTable(cds)
-disp_table_p <- dispersionTable(cds_p)
-
-
-plot(disp_table$mean_expression, disp_table$dispersion_empirical, log="xy",
-     pch=20, cex=.3, xlab = "Mean Expression", ylab="Empirical dispersion",
-     col = "#00000090", # transparent black
-     main="Monocle's dispersion estimates\nRed: simulated poisson genes")
-points(disp_table_p$mean_expression, disp_table_p$dispersion_empirical, pch = 20, cex=.3, col="#ff000090")
-```
-
-We see that monocle could gain a lot by simply modelling poisson noise and
-plotting it into their dispersion plot.
-
-
-
-
-
-
-
-
 
 
 
