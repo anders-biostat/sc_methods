@@ -183,8 +183,8 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
                    poisson_q75     <- approx(x = yfit[, "bin_x"],
                                              y = yfit[, "q75"],
                                              xout = log(allM)) ) )
-  # return final result:
-  data.frame(
+  # summarize final result:
+  df <- data.frame(
       log_Gene_Mean         = all_y[, 1],
       log_Gene_VMR          = log(allV / allM),
       log_PoissonVMR_median = all_y[, 2],
@@ -192,6 +192,11 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
       IQR_of_logged_VMR         = 2 * (all_y[, 4] - all_y[, 2]),
       row.names = rownames(all_y)
     )
+  df$aboveP  <- (df$log_Gene_VMR - df$log_PoissonVMR_median) /
+    df$IQR_of_logged_VMR
+  df <- df[order(df$aboveP, decreasing = TRUE), ]
+  
+  return(df)
   } 
 
 
@@ -205,30 +210,7 @@ getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
 
 
 
-# test getHVG function
 
-```{r}
-v <- VMRstats(rawC[, Ts])
-v <- v[order(v$log_Gene_Mean), ]
-
-
-hvg10 <- v$log_Gene_VMR >
-         v$log_PoissonVMR_median + 10 * v$IQR_of_logged_VMR
-
-
-plot(v$log_Gene_Mean, v$log_Gene_VMR, pch = 20, cex=.1, col = "#00000090")
-lines(v$log_Gene_Mean, v$log_PoissonVMR_median,
-      lwd = 1.5, col = "orange")
-lines(v$log_Gene_Mean, v$log_PoissonVMR_q75,
-      lwd = 1.5, lty = "dashed", col = "orange")
-lines(v$log_Gene_Mean,
-      v$log_PoissonVMR_median + v$IQR_of_logged_VMR,
-      lwd = 1.5, lty="dashed", col = "red")
-points(v$log_Gene_Mean[hvg10], 
-       v$log_Gene_VMR[hvg10], pch=20, col = "red")
-
-
-```
 
 
 # Plausible gene means informed by the CITEseq dataset 
@@ -256,16 +238,453 @@ plausible_means <- c(
 
 
 
+
+
+
+# Curse of dimensionality
+Here I will pick more and more HVGs to show the distances within
+and between CD4 and CD8 T cells become better and worse.
+
+## Useful functions:
+```{r}
+
+anscNorm <- function(rawCounts) {
+      apply( rawCounts, 2, function(col) {
+                     (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col)) } )
+} 
+
+library(irlba)
+pcDist <- function(counts, npc = 30, do.fast = TRUE) {
+  # computes cell-cell distances on the first 30 PCs
+  # input should be normalized
+  # each gene is scaled
+  # the PCs are not scaled to give less and less weight to higher PCs
+  if(do.fast){
+    print("computing irlba")
+     pc <- irlba::irlba(t(scale(t(counts))), nv = npc)
+     # irlba gives normalized PCs, so I re-weight by the PC's overall variance:
+     embeddings <- pc$v %*% diag(pc$d)
+     d  <- dist(embeddings)
+  } else {
+     pc  <- prcomp((t(counts)), center = TRUE, scale. = TRUE)
+     d   <- dist(pc$x[, 1:npc])
+  }
+  return(d) }
+
+
+getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
+  
+  
+distanceDF_Tcells <- function(dist) {
+  rbind(
+    data.frame(Group ="CD4_CD4",  
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD4_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F),
+    data.frame(Group = "CD8_CD8", 
+         Distance = getUpper( as.matrix(dist)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
+         stringsAsFactors = F)
+   )
+}
+
+distanceDF <- function(dist, idx1, idx2, name1, name2) {
+  rbind(
+    # both groups amongst themselves (only keep upper half of matrix)
+    data.frame(Group = paste(name1, name1, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx1, idx1])),
+    data.frame(Group = paste(name2, name2, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx2, idx2])),
+    # between the two groups (keep all values)
+    data.frame(Group = paste(name1, name2, sep = "_"),
+               Distance = as.numeric( as.matrix(dist)[idx1, idx2]))
+  )
+}
+
+
+histo_distance_group <- function(distanceDF){
+  ggplot(distanceDF,
+       aes(x = Distance, stat(density), fill = Group)) +
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1) }
+
+
+
+# get n nearest neighbors
+ NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
+   t(apply(dists, 1,
+           function(ds) which(ds < quantile(ds, n_neighbors / ncol(dists), names = F) ) ) )
+ }
+```
+
+## B vs T cells: all ok
+```{r}
+vmr <- VMRstats(rawC[, c(which(Ts), which(isBcell))])
+norm1 <- anscNorm(rawC[, c(which(Ts), which(isBcell))])
+
+
+```
+
+Histogram of distances is unclear, while tSNE and heatmaps can show the 
+difference between B and T cells quite well:
+```{r}
+d <- pcDist(norm1[rownames(head(vmr, n = 900)), ])
+
+# histogram:
+ smallddf <- distanceDF(d, 1:sum(Ts), 1:sum(isBcell), "T", "B") %>%
+   group_by(Group) %>% sample_n(30000)
+ histo_distance_group(smallddf)
+ ggplot(smallddf)+stat_ecdf(aes(Distance, colour = Group)) +
+   ggtitle("ECDF\nEucl. Dist on PCs 1-30 on 900 HVG")
+
+# tSNE: 
+ tsn <- Rtsne::Rtsne(d, is_distance = T)
+ plot(tsn$Y, pch = 20, col = rgb( norm1["HUMAN_MS4A1", ] > .02, 
+                                  norm1["HUMAN_CD8B", ] > .02, 
+                                  norm1["HUMAN_CD3E", ] > .01) ,
+      asp = 1, xlab = "tSNE 1", ylab = "tSNE 2",
+      main = "red: expresses MS4A1\nblue: expresses CD3E\nteal: expresses CD3E & CD8B")
+```
+
+Let's find a better figure of merit: 
+```{r} 
+
+
+
+identities <- as.factor(c( rep("T", sum(Ts)), rep("B", sum(isBcell)) ))
+
+for(ng in 2^(5:13)) {
+  print(ng)
+  fast <- ifelse(ng > 500, TRUE, FALSE)
+  
+  d <- pcDist(norm1[rownames(head(vmr, n = ng)), ], do.fast = fast)
+  nns <- NNindices(as.matrix(d), n_neighbors = 10 )
+  n_Ts <- apply(nns, 1, function(ids) sum(identities[ids] == "T"))
+  
+  # output nice plots:
+   par(mfrow = c(1, 2)) 
+   plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+        ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+        main = ng) 
+   points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   hist(n_Ts, xlab = "T cells amongst 10 NNs", main = ng,
+        breaks = -.5+0:11, ylim = c(0, 800) )
+ 
+}
+
+
+
+
+
+
+
+ 
+```
+
+
+
+## CD4 vs CD8 T cells - no regressing
+
+```{r}
+sel <- c(which(isCD4Tcell), which(isCD8Tcell))
+identities <- c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)) )
+
+vmr <- VMRstats(rawC[, sel] )
+norm2 <- log( t(t(rawC[, sel]) * median(colSums(rawC[, sel])) /
+                  colSums(rawC[, sel])  ) + 1 )
+
+
+
+for(ng in 2^(5:14)) {
+  print(ng)
+  fast <- ifelse(ng > 500, TRUE, FALSE)
+  
+  # d <- pcDist(norm2[rownames(head(vmr, n = ng)), ], do.fast = fast)
+  d <- parDist(t(norm2[rownames(head(vmr, n = ng)), ]) )
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_euclidean/" ,      
+        "NNs_PCs1to30_hvgs1to", ng, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(ng))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+## CoD on PCs
+Curse of dimensionality (CoD)
+```{r}
+
+ pc  <- prcomp((t(norm2[rownames(vmr[1:100,]), ])), center = TRUE, scale. = TRUE)
+ d   <- dist(pc$x[, 1:100])
+ 
+ d2 <- dist(t(norm2[rownames(vmr[1:100, ]), ] ))
+ 
+ idx<- c(sample(which(isCD4Tcell[Ts]), 100), sample(which(isCD8Tcell[Ts]), 100))
+```
+
+```{r}
+sel <- c(which(isCD4Tcell), which(isCD8Tcell))
+identities <- c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)) )
+
+vmr <- VMRstats(rawC[, sel] )
+norm2 <- log( t(t(rawC[, sel]) * median(colSums(rawC[, sel])) /
+                  colSums(rawC[, sel])  ) + 1 )
+
+pc <- irlba::irlba(t(scale(t(norm2[rownames(vmr), ]))),
+                         nv = 40)
+embeddings <- pc$v %*% diag(pc$d)
+     d  <- dist(embeddings)
+# tmp <- Rtsne::Rtsne(d, is_distance = TRUE)  
+plot(tmp$Y, pch = 20, col = c(rep(1, sum(isCD4Tcell)), rep(2, sum(isCD8Tcell))),
+     asp=1)
+
+for(np in c(1:13 * 3)) {
+  print(np)
+  
+  d <- dist(embeddings[, 1:np])
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_allGenes_varyPC/" ,      
+        "NNs_lognormAllGenes_PCs1to", np, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(np))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+
+
+
+
+## CoD on Cells
+Curse of dimensionality (CoD): let's take all cells, this should also make
+it harder to tell CD4 and CD8 T cells apart.
+
+```{r}
+# vmr <- VMRstats(rawC )
+norm3 <- log( t(t(rawC) * median(colSums(rawC)) /
+                  colSums(rawC)  ) + 1 )
+
+pc <- irlba::irlba(t(scale(t(norm3[rownames(vmr), ]))),
+                         nv = 40)
+embeddings <- pc$v %*% diag(pc$d)
+
+
+d  <- dist(embeddings[, 1:28])
+tmp <- Rtsne::Rtsne(d, is_distance = TRUE)  
+plot(tmp$Y, pch = 20, col = rgb(.5+.5*isCD4Tcell, .5+.5*isCD8Tcell, 0),
+     asp=1)
+
+for(np in c(1:39)) {
+  print(np)
+  
+  d <- dist(embeddings[, 1:np])
+  
+  nn4 <- NNindices(as.matrix(d)[isCD4Tcell, ] )
+  nn4 <- apply(nn4, 1, function(drow) sum(isCD4Tcell[drow]))
+  
+  nn8 <- NNindices(as.matrix(d)[isCD8Tcell, ] )
+  nn8 <- apply(nn8, 1, function(drow) sum(isCD8Tcell[drow]))
+ 
+   
+  df <- rbind(data.frame(Celltype = "CD4", NNsameType = unname(nn4) ),
+               data.frame(Celltype = "CD8", NNsameType = unname(nn8) ) )
+  df$NNsameType =  factor(df$NNsameType, levels = 0:10)
+  
+  
+  
+  cd4 <-  data.frame(table(df[df$Celltype== "CD4",
+                        "NNsameType"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(df[df$Celltype== "CD8",
+                        "NNsameType"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(isCD4Tcell),
+                       cd8$Freq / sum(isCD8Tcell) ))
+  
+    
+  # output nice plots:
+   png(paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "lognormalization_allGenes_allCells_varyPC/" ,      
+        "NNs_lognormAllGenes_PCs1to", np, ".png"), width = 1000, height = 600, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  print(ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion") +
+    ggtitle(np))
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   dev.off()
+ 
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## CD4 vs CD8 T cells - regress nUMIs
+
+```{r}
+library(Seurat)
+s <- MakeSparse(CreateSeuratObject(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]))
+s <- NormalizeData(s)
+s <- FindVariableGenes(s, display.progress = F)
+
+s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
+               genes.use = rownames(vmr[1:4100,]), use.umi = T,
+               model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
+```
+
+
 # Savepoint
 
 ```{r}
-# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/messySeurat_s.rda")
 library(ggplot2)
 library(pbmcapply) # parallelization
 library(quantreg)  # quantile regression with rq.wfit
 library(parallelDist)
-load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/1.rda")
+library(tidyverse)
+load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/messySeurat_s.rda")
 ```
+
+
+
+
+
+
+
+```{r}
+
+for(ng in 2^(6:14)) {
+  print(ng)
+ seurat <- RunPCA(s, pc.genes = rownames(head(vmr, n = ng)), pcs.compute = 30,
+            do.print = F)
+   d    <- parallelDist::parDist(seurat@dr$pca@cell.embeddings[, 1:30],
+                                  threads = 4)
+ 
+  nns <- NNindices(as.matrix(d), n_neighbors = 11 )
+  correct_assignments <- apply(nns, 1, function(ids)
+    sum(identities[ids[2:11]] == identities[ids[1]]))
+  cdf <- (cbind.data.frame(correct_assignments, identities))
+  # below, table will note empty levels only if it's a factor:
+  cdf$correct_assignments <- factor(cdf$correct_assignments, levels = 0:10)
+  
+  cd4 <-  data.frame(table(cdf[cdf$identities == "CD4",
+                        "correct_assignments"]), Celltype = "CD4")
+  cd8 <-  data.frame(table(cdf[cdf$identities == "CD8",
+                        "correct_assignments"]), Celltype = "CD8")
+  cdf <- data.frame(rbind(cd4, cd8),
+             prop = c( cd4$Freq / sum(identities == "CD4"),
+                       cd8$Freq / sum(identities == "CD8") ))
+  
+    
+  # output nice plots:
+  fn <- paste0(
+        "/home/felix/Dropbox/PhD/Meetings-Talks-etc/labM_Anders/7_hvg_vmr_CD4CD8/",
+        "withRegressingUMIs/",
+        "NNs_PCs1to30_hvgs1to", ng, ".png")
+  # png(fn, width = 1000, height = 800, units = "px")
+  # par(mfrow = c(1, 2)) 
+  # plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
+  #      ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
+  #      main = ng) 
+  # points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
+   
+  ggplot2::ggsave(fn, ggplot(cdf) + geom_bar(aes(Var1, prop, fill = Celltype),stat = "identity", position = "dodge") + xlab("NNs of same cell type")+ ylab("Proportion")
+  )
+   # deprecated plot:
+   # hist(ns, xlab = "CD4 T cells amongst 100 NNs", main = paste0("CD4 and CD8 T cells\n", ng),
+   #      breaks = -.5+0:101, ylim = c(0, 800) )
+   #dev.off()
+ 
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -441,7 +860,7 @@ s <- NormalizeData(s)
 s <- FindVariableGenes(s, display.progress = F)
 s@var.genes <- names(hvgs_T$hvg_2IQR)
 s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
-               genes.use = s@var.genes,
+               genes.use = s@var.genes, use.umi = T,
                model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
 s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
 
