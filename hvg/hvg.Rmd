@@ -208,46 +208,7 @@ getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
 }
 ```
 
-
-
-
-
-
-# Plausible gene means informed by the CITEseq dataset 
-Here are raw counts typically observed for an average cell in a 10X scRNAseq dataset.
-These can be used directly as Poisson rates  to simulate data, or they can be
-adjusted with sizefactors around 1 (1 being the cell with average sequencing depth).
-```{r}
-plausible_means <- c( 
-  runif(575, min = .5, max = 1),
-  runif(267, min = 1,  max = 2),
-  runif(190, min = 2,  max = 10),
-  runif(70, min = 10, max = 40)  )
-# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
-# cs <- colSums(rawC)
-# normC <- t( t(rawC) *mean(cs)/ cs)
-# table(round(rowMeans(normC)))
-# rms <- rowMeans(normC)
-# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
-# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
-```
-
-
-
-
-
-
-
-
-
-
-
-
-# Curse of dimensionality
-Here I will pick more and more HVGs to show the distances within
-and between CD4 and CD8 T cells become better and worse.
-
-## Useful functions
+# Other Functions
 ```{r}
 
 anscNorm <- function(rawCounts) {
@@ -255,76 +216,21 @@ anscNorm <- function(rawCounts) {
                      (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col)) } )
 } 
 
-library(irlba)
-pcDist <- function(counts, npc = 30, do.fast = TRUE) {
-  # computes cell-cell distances on the first 30 PCs
-  # input should be normalized
-  # each gene is scaled
-  # the PCs are not scaled to give less and less weight to higher PCs
-  if(do.fast){
-    print("computing irlba")
-     pc <- irlba::irlba(t(scale(t(counts))), nv = npc)
-     # irlba gives normalized PCs, so I re-weight by the PC's overall variance:
-     embeddings <- pc$v %*% diag(pc$d)
-     d  <- dist(embeddings)
-  } else {
-     pc  <- prcomp((t(counts)), center = TRUE, scale. = TRUE)
-     d   <- dist(pc$x[, 1:npc])
-  }
-  return(d) }
+
 
 
 getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
-  
-
-
-# poor-style custom function, delete soon:  
-distanceDF_Tcells <- function(dist) {
-  rbind(
-    data.frame(Group ="CD4_CD4",  
-         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD4Tcell[Ts]] ),
-         stringsAsFactors = F),
-    data.frame(Group = "CD4_CD8", 
-         Distance = getUpper( as.matrix(dist)[isCD4Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F),
-    data.frame(Group = "CD8_CD8", 
-         Distance = getUpper( as.matrix(dist)[isCD8Tcell[Ts], isCD8Tcell[Ts]] ),
-         stringsAsFactors = F)
-   )
-}
-
-distanceDF <- function(dist, idx1, idx2, name1, name2) {
-  rbind(
-    # both groups amongst themselves (only keep upper half of matrix)
-    data.frame(Group = paste(name1, name1, sep = "_"),
-               Distance = getUpper( as.matrix(dist)[idx1, idx1])),
-    data.frame(Group = paste(name2, name2, sep = "_"),
-               Distance = getUpper( as.matrix(dist)[idx2, idx2])),
-    # between the two groups (keep all values)
-    data.frame(Group = paste(name1, name2, sep = "_"),
-               Distance = as.numeric( as.matrix(dist)[idx1, idx2]))
-  )
-}
-
-
-histo_distance_group <- function(distanceDF){
-  ggplot(distanceDF,
-       aes(x = Distance, stat(density), fill = Group)) +
-       geom_histogram(position = "identity", alpha = .6, binwidth = 1) }
-
-
-
-
  
- sqDeviation <- function(PCvector) {
+
+sqDeviation <- function(PCvector) {
   # For a given numerical vector, returns a matrix
   # with squared deviations of amongst all its elements.
   # Taking this matrix's square root is the 1D Euclidean Distance.
   sapply(PCvector, function(entry) (entry - PCvector) * (entry - PCvector))
  }
  
-# get n nearest neighbors' indices. 
- NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
+NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
+  # get n nearest neighbors' indices. 
   NN = t(apply(dists, 1,   
            function(ds) head(order(ds), n = n_neighbors)
              ) )
@@ -351,6 +257,284 @@ stratNs <- function(NN, ct) {
 
 
 ```
+
+
+
+
+
+# Plausible gene means and sizefactors
+
+Plausible gene means inspired by CITEseq dataset
+When simulating scRNAseq data
+(e.g. as Poisson counts for homogeneous populations),
+it is useful to cover biologically relevant ranges of gene expression magnitude.
+Here are "plausible gene means", meaning they could actually be raw counts of
+~ 1000 genes observed for a cell with average library size
+(libsize here means nUMI aka colSums)
+in a 10X scRNAseq dataset.
+These can be used directly as Poisson rates to simulate data, or they can be
+adjusted with sizefactors centered around 1 (1 representing the cell with average sequencing depth).
+
+```{r plausible_means}
+plausible_means <- c(  
+    runif(575, min = .5, max = 1),
+    runif(267, min = 1,  max = 2),
+    runif(190, min = 2,  max = 10),
+    runif(70, min = 10, max = 40)  )
+# compare to citeseq by loading rawC as in hvg.Rmd, followed by:
+# cs <- colSums(rawC)
+# normC <- t( t(rawC) *mean(cs)/ cs)
+# table(round(rowMeans(normC)))
+# rms <- rowMeans(normC)
+# plot(table(round(plausible_means, digits = 1 )), main = "Simulated means", ylab = "Number of Genes")
+# plot(table(round(rms[rms < 40 & rms > .5], digits = 1)), main = "CITEseq means (> .5 UMIs)", ylab="Number of Genes")
+```
+
+Turns out using the f-Distribution we can simulate acceptable sizefactors
+around 1 for scRNAseq data.
+```{r plausible_sf}
+plausible_sf <- rf(1000,20,22, 0)
+# This is where the f-Distribution idea is motivated from:
+#  # load the citeseq dataset first, then you can get the sizefactors:
+#  sf <- colSums(rawC) / mean(colSums(rawC))
+#  hist(sf, breaks = 0:150 * .1)
+#  
+#  # let's fit an f-Distribution to that. With guessing parameters, it'd look like this:
+#  x <- seq(0, 20, length.out = 1000)
+#  hist(sf, breaks = 0:150 * .1, freq  = F); lines(x, df(x, df1=3, df2=2, ncp = 0), col="blue")
+#  
+#  # lets find maximum likelihood estimates:
+#  optim(c(2, 5, 3), function(params) -sum(df(sf, df1 =  params[1],
+#                                             df2 =  params[2], ncp = 
+#                                               params[3], log = T) ) )
+#  
+#  hist(sf, breaks = 0:150 * .1, freq  = F); lines(x, df(x,20,22, 0), col="blue")
+```
+
+
+
+
+
+
+# Savepoint
+
+```{r}
+# save.image(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/start_hvg.rda")
+library(ggplot2)
+library(pbmcapply) # parallelization
+library(quantreg)  # quantile regression with rq.wfit
+library(parallelDist)
+library(tidyverse)
+library(Rtsne)
+load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/start_hvg.rda")
+```
+
+
+
+
+
+
+# Curse of dimensionality
+Here I will pick more and more HVGs and/or PCs to show the distances within
+and between CD4 and CD8 T cells become better and worse.
+
+
+## Colour scheme
+Useful to pick colors for CD4 and CD8 
+once and then use them consistently throughout this script.
+```{r}
+dark2 <- brewer.pal(8, "Dark2")
+myCols <- scale_colour_manual(values = c("CD4" = dark2[2], "CD8" = dark2[5]))
+```
+
+## Select cells (250+250)
+I want the groups (CD4 and CD8) to be even, so I draw 250 CD4 T cells (out of
+almost 3000). Note that CD8 T  cells **systematically have higher library sizes**
+than CD4 T cells. To investigate the effect of this, I draw twice: once randomly,
+and once so that libsizes roughly match.
+
+Convention: I'll always list the 250 CD4 cells first, followed by 250 CD8 T cells:
+```{r}
+ct <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) )
+```
+
+
+1. Randomly draw 250 CD4 cells:
+```{r}
+selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
+# order by celltype, then by libsize:
+selectFew <- selectFew[ order(ct, colSums(rawC[, selectFew]), decreasing = F) ]
+```
+2. match library sizes of selected CD4 cells to the 250 CD8 T cells
+in the CITEseq dataset:
+```{r}
+cs <- colSums(rawC)
+# we mask all non-CD4 cells by adding huge numbers:
+dummycs <- cs; dummycs[! isCD4Tcell ] <- dummycs[ !isCD4Tcell] + 32000
+# for each CD8 cell, we'll put the CD4 cell with most similar library size
+# into the first column of the `simil` matrix, the second most similar into
+# the second column, etc. The first column has duplicates, so them alone would
+# not be 250 cells. But taking the first two columns together we have enough
+# unique CD4 T cells to draw 250 from them:
+simil <- t(sapply(cs[isCD8Tcell], function(libsize) {
+  order(abs(libsize - dummycs), decreasing = FALSE)
+}))
+ids <- sample( unique(as.vector(simil[, 1:2])),  250 )
+
+selecteven <- c(ids, which(isCD8Tcell))
+```
+
+You see here that it makes quite some difference:
+```{r cd4_cd8_libsizes, fig.height=6, fig.width=9}
+plot_grid(
+   data.frame(libsize = colSums(rawC[, selectFew]), Celltype = ct) %>%
+  ggplot(aes(Celltype, libsize, col = Celltype))+
+  geom_violin(draw_quantiles = c(.5)) +
+  geom_jitter() + ylim(c(0,8500)) +
+  ggtitle("250 random CD4 T cells\nRcode: selectFew") +
+  myCols + theme(legend.position = "none"),
+  
+  data.frame(libsize = colSums(rawC[, selecteven]), Celltype = ct) %>%
+  ggplot(aes(Celltype, libsize, col = Celltype))+
+  geom_violin(draw_quantiles = c(.5)) +
+  geom_jitter() +ylim(c(0,8500)) +
+    ggtitle("Samples for even library sizes\nRcode: selecteven") +
+    myCols + theme(legend.position = "none"),
+  
+  ncol = 2
+)
+```
+
+
+
+## Normalize data
+I will compare euclidean distances with increasing numbers of features: 
+  normalized gene expression directly, 
+  PCs on normalized genes, 
+  PCs on regressed (nUMI, ...) genes.
+
+Normalize by hand (selectFew and selecteven):
+```{r}
+normFew  <- log( t(t(rawC[, selectFew]) * median(colSums(rawC[, selectFew])) /
+                  colSums(rawC[, selectFew])  ) + 1 ) 
+
+normeven <- log( t(t(rawC[, selecteven]) * median(colSums(rawC[, selecteven])) /
+                  colSums(rawC[, selecteven])  ) + 1 ) 
+```
+
+
+Normalize with seurat (selectFew):
+```{r}
+s <- CreateSeuratObject(rawC[, selectFew])
+
+mito <- rownames(s@data)[grepl("HUMAN_MT-", rownames(s@data))]
+s   <- AddMetaData(s,
+                   metadata = colSums(s@raw.data[mito, ]) / colSums(s@raw.data),
+                   col.name = "percent.mito")
+s <- NormalizeData(s)
+s <- FindVariableGenes(s)
+
+noR <- ScaleData(s, genes.use = rownames(s@data), vars.to.regress = NULL)
+R   <- ScaleData(s, genes.use = rownames(s@data), vars.to.regress = c("nUMI", "percent.mito"))
+
+
+# extract normalized counts:
+seurat_norm <- noR@scale.data
+seurat_regr <-   R@scale.data
+```
+
+## Compute PCA:
+```{r}
+pcFew  <- prcomp((t(normFew)), center = TRUE, scale. = FALSE)
+
+pc_seurat_norm <- prcomp(t(noR@scale.data),
+                         center = TRUE , scale. = FALSE)
+pc_seurat_regr <- prcomp(t(  R@scale.data),
+                         center = TRUE , scale. = FALSE)
+
+# for even library sizes:
+pceven<- prcomp((t(normeven)), center = TRUE, scale. = FALSE)
+```
+
+## NNs readout
+```{r}
+
+correctNeighbors <- function(prcompObj = NULL,
+                             celltypeInfo = NULL,
+                             n_neighbors = 31) {
+  # initialize variables:
+  sqDs <- matrix(0, nrow = nrow(prcompObj$x), ncol = ncol(prcompObj$x))    
+  results <- tibble()
+  # loop through all PCs:
+  for(p in 1:ncol(prcompObj$x)) {
+   if(p %% 10 == 0) print(p)
+   sqDs <- sqDs + sqDeviation(prcompObj$x[, p])
+   nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = n_neighbors)
+   correct_assignments <- apply(nns, 1, function(ids)
+        sum(celltypeInfo[ids[2:ncol(nns)]] == celltypeInfo[ids[1]]))
+   tmp <- tibble(  correct_assignments, Celltype = celltypeInfo,
+                         PCs = p) %>% # number of PC
+     group_by(Celltype, PCs) %>%
+     summarise(Mean_correctNeighbors = mean(correct_assignments))  
+   results <- bind_rows(results, tmp) 
+  } 
+  return(results)
+}
+```
+
+
+## Playground
+I change the below codechunk again and again to generate plots - these 
+plots are pasted into a powerpoint presentation.
+```{r message=FALSE}
+tbl_1 <- correctNeighbors(pc_seurat_norm , ct, 31)
+```
+Plot correctly assigned nearest neighbors:
+```{r fig.height=3.5, fig.width=10}
+
+
+cowplot::plot_grid(
+     ggplot(tbl_1) + geom_point(aes(PCs, Mean_correctNeighbors, col=Celltype))+
+     ylim(0, 30) +  myCols + theme(legend.position = "top"),
+     
+     data.frame(libsize = colSums(rawC[, selectFew]), Celltype = ct) %>% 
+     ggplot(aes(Celltype, libsize, col = Celltype))+geom_violin(draw_quantiles = c(.5)) +
+     geom_jitter(size=.3)+myCols + theme(legend.position = "none"),
+     
+     ncol = 2, 
+     rel_widths = c(3,1)
+)
+     
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------
+# Old parts of script, delete soon
+# ---------------------------------------
 
 ## B vs T cells: all ok
 
@@ -548,25 +732,6 @@ as.data.frame(stratNs(Tnn250, identities)) %>%
 
 ## CoD on PCs (250 + 250 cells)
 
-Let's only use a few cells, so that the groups are even (250 CD4, 250 CD8 T cells):
-```{r}
-ctFew     <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) )
-selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
-# order by celltype, then by libsize:
-selectFew <- selectFew[ order(ctFew, colSums(rawC[, selectFew]), decreasing = F) ]
-# the increment for the colsums:
-incFew    <- c( rep(-1, 250), rep(1, 250))
-
-# find exremely noisy genes, those we exclude in PCA for speed:
-vmrFew <- VMRstats(rawC[, selectFew] )
-coarse_pickFew <- rownames(
-    vmrFew[ vmrFew$log_Gene_VMR > vmrFew$log_PoissonVMR_median, ] )
-# normalize, then compute PCA: 
-normFew <- log( t(t(rawC[, selectFew]) * median(colSums(rawC[, selectFew])) /
-                  colSums(rawC[, selectFew])  ) + 1 ) 
-pcFew  <- prcomp((t(normFew[ coarse_pickFew, ])), center = TRUE, scale. = FALSE)
-```
-
 
 ### More PCs, popular neighbors and nUMI
 We can see that at one point, the more PCs we include in the distance computation,
@@ -623,46 +788,9 @@ We see that deeply sequenced cells (with high nUMI) are popular neighbors.
 In fact, > 60 % of cells are no one's nearest neighbors, whereas the one or two
 dozen cells with highest sequencing coverage are neighbors of 80 or 90 % of the cells.
 
-### Simon's look at it
-```{r}
-
-
-# cell 251 is NN of 499 other cells! (found with: `which.max( table(nns) )
-
-cellA <- 489 # popular neighbor
-cellB <- 252
-cellC <- 454 
- 
-pairs(normC[, c(cellA, cellB, cellC)], pch = 20, asp = 1,
-      labels = c(cellA, cellB, cellC))
-
-pc_corr_libsize <- 1 + (apply(pcFew$x, 2, function(pc) cor(pc, cs)) > .1)
-pc_first20      <- c(rep("red", 20), rep("black", 480))
-
-pairs( t(pcFew$x[c(cellA, cellB, cellC), ]), pch = 20,
-      labels = c(cellA, cellB, cellC), asp = 1,
-      col = pc_first20,
-      cex = pcFew$sdev / 2)
-```
 
 
 
-### 250+250, even libsizes
-Let's sample down CD4 T cells so that their library sizes are really
-similar to those of CD8 T cells.
-
-```{r}
-cs <- colSums(rawC)
-# we mask all non-CD4 cells by adding huge numbers:
-dummycs <- cs; dummycs[! isCD4Tcell ] <- dummycs[ !isCD4Tcell] + 32000
-ids <- sapply(cs[isCD8Tcell], function(ls) which.min( abs(ls - dummycs) ) )
-
-selecteven <- c(ids, which(isCD8Tcell))
-cteven     <- c( rep("CD4", 250),  rep("CD8", 250))
-
-normEven <- log( t(t(rawC[, selecteven]) * median(colSums(rawC[, selecteven])) /
-                  colSums(rawC[, selecteven])  ) + 1 ) 
-```
 
 
 
@@ -1075,7 +1203,7 @@ it harder to tell CD4 and CD8 T cells apart.
 # vmr <- VMRstats(rawC )
 norm3 <- log( t(t(rawC) * median(colSums(rawC)) /
                   colSums(rawC)  ) + 1 )
-
+library(irlba)
 pc <- irlba::irlba(t(scale(t(norm3[rownames(vmr), ]))),
                          nv = 40)
 embeddings <- pc$v %*% diag(pc$d)
@@ -1404,39 +1532,36 @@ lines(v$log_Gene_Mean, )
 
 
 
-## seurat stuff
 
 
-
-
-
-
-
+# weighted distance
 
 ```{r}
-s <- MakeSparse(CreateSeuratObject(rawC[, Ts]))
-s <- NormalizeData(s)
-s <- FindVariableGenes(s, display.progress = F)
-s@var.genes <- names(hvgs_T$hvg_2IQR)
-s <- ScaleData(object = s, vars.to.regress = c("nUMI"),
-               genes.use = s@var.genes, use.umi = T,
-               model.use = "negbinom", do.par = T, num.cores = 4, display.progress = T)
-s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+distanceDF <- function(dist, idx1, idx2, name1, name2) {
+  rbind(
+    # both groups amongst themselves (only keep upper half of matrix)
+    data.frame(Group = paste(name1, name1, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx1, idx1])),
+    data.frame(Group = paste(name2, name2, sep = "_"),
+               Distance = getUpper( as.matrix(dist)[idx2, idx2])),
+    # between the two groups (keep all values)
+    data.frame(Group = paste(name1, name2, sep = "_"),
+               Distance = as.numeric( as.matrix(dist)[idx1, idx2]))
+  )
+}
 
-d_seurat <- parallelDist::parDist(s@dr$pca@cell.embeddings[, 1:10],
-                                  threads = 4)
 
-ggplot(distanceDF_Tcells(d_seurat),
+histo_distance_group <- function(distanceDF){
+  ggplot(distanceDF,
        aes(x = Distance, stat(density), fill = Group)) +
-       geom_histogram(position = "identity", alpha = .6, binwidth = 1)
+       geom_histogram(position = "identity", alpha = .6, binwidth = 1) }
+
+
+
 ```
 
 
 
-
-
-
-# weighted distance
 Simon and I play around with this but find it's not very powerful
 yet.
 ```{r}
