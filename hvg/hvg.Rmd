@@ -197,7 +197,7 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
   df <- df[order(df$aboveP, decreasing = TRUE), ]
   
   return(df)
-  } 
+} 
 
 
 getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
@@ -214,7 +214,9 @@ getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
 
 
 # Plausible gene means informed by the CITEseq dataset 
-This is useful for all kinds of simulations.
+Here are raw counts typically observed for an average cell in a 10X scRNAseq dataset.
+These can be used directly as Poisson rates  to simulate data, or they can be
+adjusted with sizefactors around 1 (1 being the cell with average sequencing depth).
 ```{r}
 plausible_means <- c( 
   runif(575, min = .5, max = 1),
@@ -245,7 +247,7 @@ plausible_means <- c(
 Here I will pick more and more HVGs to show the distances within
 and between CD4 and CD8 T cells become better and worse.
 
-## Useful functions:
+## Useful functions
 ```{r}
 
 anscNorm <- function(rawCounts) {
@@ -274,6 +276,8 @@ pcDist <- function(counts, npc = 30, do.fast = TRUE) {
 
 getUpper <- function(mat) mat[upper.tri(mat, diag = FALSE)]
   
+
+
 # poor-style custom function, delete soon:  
 distanceDF_Tcells <- function(dist) {
   rbind(
@@ -310,76 +314,111 @@ histo_distance_group <- function(distanceDF){
 
 
 
-# get n nearest neighbors
- NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
-   t(apply(dists, 1,
-           function(ds) which(ds < quantile(ds, n_neighbors / ncol(dists), names = F) ) ) )
- }
-```
 
-## B vs T cells: all ok
-```{r}
-vmr <- VMRstats(rawC[, c(which(Ts), which(isBcell))])
-norm1 <- anscNorm(rawC[, c(which(Ts), which(isBcell))])
-
-
-```
-
-Histogram of distances is unclear, while tSNE and heatmaps can show the 
-difference between B and T cells quite well:
-```{r}
-d <- pcDist(norm1[rownames(head(vmr, n = 900)), ])
-
-# histogram:
- smallddf <- distanceDF(d, 1:sum(Ts), 1:sum(isBcell), "T", "B") %>%
-   group_by(Group) %>% sample_n(30000)
- histo_distance_group(smallddf)
- ggplot(smallddf)+stat_ecdf(aes(Distance, colour = Group)) +
-   ggtitle("ECDF\nEucl. Dist on PCs 1-30 on 900 HVG")
-
-# tSNE: 
- tsn <- Rtsne::Rtsne(d, is_distance = T)
- plot(tsn$Y, pch = 20, col = rgb( norm1["HUMAN_MS4A1", ] > .02, 
-                                  norm1["HUMAN_CD8B", ] > .02, 
-                                  norm1["HUMAN_CD3E", ] > .01) ,
-      asp = 1, xlab = "tSNE 1", ylab = "tSNE 2",
-      main = "red: expresses MS4A1\nblue: expresses CD3E\nteal: expresses CD3E & CD8B")
-```
-
-Let's find a better figure of merit: 
-```{r} 
-
-
-
-identities <- as.factor(c( rep("T", sum(Ts)), rep("B", sum(isBcell)) ))
-
-for(ng in 2^(5:13)) {
-  print(ng)
-  fast <- ifelse(ng > 500, TRUE, FALSE)
-  
-  d <- pcDist(norm1[rownames(head(vmr, n = ng)), ], do.fast = fast)
-  nns <- NNindices(as.matrix(d), n_neighbors = 10 )
-  n_Ts <- apply(nns, 1, function(ids) sum(identities[ids] == "T"))
-  
-  # output nice plots:
-   par(mfrow = c(1, 2)) 
-   plot(vmr$log_Gene_Mean, vmr$log_Gene_VMR, pch = 20, cex=.1, col = "#00000040",
-        ylab = "log_VMR ( log(var/mu)", xlab = "Average expression ( log(mu) )",
-        main = ng) 
-   points(vmr$log_Gene_Mean[1:ng], vmr$log_Gene_VMR[1:ng], pch=20, col = "red")
-   hist(n_Ts, xlab = "T cells amongst 10 NNs", main = ng,
-        breaks = -.5+0:11, ylim = c(0, 800) )
  
+ sqDeviation <- function(PCvector) {
+  # For a given numerical vector, returns a matrix
+  # with squared deviations of amongst all its elements.
+  # Taking this matrix's square root is the 1D Euclidean Distance.
+  sapply(PCvector, function(entry) (entry - PCvector) * (entry - PCvector))
+ }
+ 
+# get n nearest neighbors' indices. 
+ NNindices <- function(dists = as.matrix(dist(matrix(1:9,3))), n_neighbors = 10) {
+  NN = t(apply(dists, 1,   
+           function(ds) head(order(ds), n = n_neighbors)
+             ) )
+  return(NN)
+ }
+
+ 
+  
+stratNs <- function(NN, ct) {
+# Stratify neighborhoods: for each cell (row) in NN, count neighborhoods it 
+# belongs to.
+  # NN: is a matrix with one row per cell (neighborhood), filled with the
+  #     indices of that cell's
+  #     nearest neighbors (e.g. top 10, top 30, ...).
+  # ct: is a character vector with the celltype of each cell, in the same order
+  #     as the rows in NN.
+  # value: 
+  cbind(ID = 1:nrow(NN), 
+    sapply(unique(ct), function(type)
+      { as.numeric( table( factor( NN[ ct == type,  ], levels = 1:nrow(NN) ) ) ) 
+    })
+  )
 }
 
 
-
-
-
-
-
- 
 ```
+
+## B vs T cells: all ok
+
+```{r}
+# cell types in alphabetical order (otherwise doesn't match ordered selectBT):
+ctBT <- c(  rep("B", sum(isBcell)),  rep("T", 500) )
+selectBT <- c(which(isBcell), sample(which(Ts), 500) )
+selectBT <- selectBT[ order(ctBT, colSums(rawC[, selectBT]))]
+
+
+normBT <- log( t(t(rawC[, selectBT]) * median(colSums(rawC[, selectBT])) /
+                  colSums(rawC[, selectBT])  ) + 1 )
+
+# preselect genes very coarsely for speedup in PCA:
+vmrBT <- VMRstats(rawC[, selectBT])
+coarse_pickBT <- rownames( vmrBT[vmrBT$log_Gene_VMR > vmrBT$log_PoissonVMR_median,] )
+
+pcBT<- prcomp((t(normBT[ coarse_pickBT, ])), center = TRUE, scale. = FALSE)
+```
+
+
+```{r}
+ sqDs <- matrix(0, nrow = nrow(pcBT$x), ncol = ncol(pcBT$x))    
+ BT_DF <- tibble()
+for(p in 1:ncol(pcBT$x)) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcBT$x[, p])
+ nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+ # within NNs we can now ask for interesting statistics:
+ correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctBT[ids[2:ncol(nns)]] == ctBT[ids[1]]))
+ tmp <- tibble(  correct_assignments, Celltype = ctBT,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ BT_DF <<- bind_rows(BT_DF, tmp) 
+}
+
+p_BT<- ggplot(BT_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))
+p_BT 
+
+BTnn10 <- NNindices( as.matrix(dist(pcBT$x[, 1:10])), n_neighbors = 31)
+as.data.frame(stratNs(BTnn10, ctBT)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+
+BTnn400 <- NNindices( as.matrix(dist(pcBT$x[, 1:400])), n_neighbors = 31)
+as.data.frame(stratNs(BTnn400, ctBT)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+
+
+plot( as.numeric(table(BTnn10)), pch = 20, col = 3 + (ctBT=="T"),
+      xlab = "B cells (green), T cells (blue), ordered by library size",
+      ylab = "Dots: N30 neighborhoods. Line: libsize (A.U.)", 
+      main = "265 B cells and 500 T cells\nDistances on first 10 PCs")
+lines( colSums(rawC[, selectBT]) / 100)
+```
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -406,6 +445,7 @@ for(ng in 2^(5:14)) {
   # d <- pcDist(norm2[rownames(head(vmr, n = ng)), ], do.fast = fast)
   #########  eucl. distance directly on gene expression (very poor performance):
   d <- parDist(t(norm2[rownames(head(vmr, n = ng)), ]) )
+  
   nns <- NNindices(as.matrix(d), n_neighbors = 11 )
   correct_assignments <- apply(nns, 1, function(ids)
     sum(identities[ids[2:11]] == identities[ids[1]]))
@@ -457,33 +497,20 @@ norm2 <- log( t(t(rawC[, sel]) * median(colSums(rawC[, sel])) /
 
 # compute PCA on (almost) all genes (minus exremely noisy ones, for speed):
   coarse_pick <- rownames( vmr[vmr$log_Gene_VMR > vmr$log_PoissonVMR_median,] )
-  pc  <- prcomp((t(norm2[ coarse_pick, ])), center = TRUE, scale. = TRUE)
-  # I scale and center here but scaling is debatable.
-  # Note that irlba's implementation in Seurat does the same.
-
-  
- 
+  pc  <- prcomp((t(norm2[ coarse_pick, ])), center = TRUE, scale. = FALSE)
+  # I used to scale and center here but scaling is debatable.
+  # Note that irlba's implementation in Seurat does both.
+```
 
 
-
-
-
-################################
-
-sqDeviation <- function(PCvector) {
-  sapply(PCvector, function(entry) (entry - PCvector) * (entry - PCvector))
-}
-
- 
-
-  
- sqDs <- matrix(0, nrow = 3018, ncol = 3018)    
- T_DF <- tibble()
+```{r}
+sqDs <- matrix(0, nrow = nrow(pc$x), ncol = ncol(pc$x))    
+T_DF <- tibble()
 for(p in 1:1000) {
-  print(p)
  sqDs <<- sqDs + sqDeviation(pc$x[, p])
 
  if(p %% 50 ==0 | p < 50) { 
+   print(p)
   nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
   correct_assignments <- apply(nns, 1, function(ids)
       sum(identities[ids[2:ncol(nns)]] == identities[ids[1]]))
@@ -495,66 +522,75 @@ for(p in 1:1000) {
  }
 }
 
-# first500 <- resultDF
  
- 
- 
-ggplot(T_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype)) +
+p_T <- ggplot(T_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype)) +
   ggtitle("2768 CD4 T cells, 250 CD8 T cells")
 ```
-This picture is nice, but not very clear yet as there are roughly 10x more CD4 
+There are roughly 10x more CD4 
 than CD8 T cells. So without any transcriptomic differences, we'd expect the
-red line around 29 and the blue line around 1 - not sure why the red is
-so far below and the blue so far above their expectations. Let's get some clarity
-by evening the groups first (see next section).
+red line around 29 and the blue line around 1. So I suppose this is not bad.
+
+```{r}
+Tnn8<- NNindices( as.matrix(dist(pc$x[, 1:8])), n_neighbors = 31)
+as.data.frame(stratNs(Tnn8, identities)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+
+
+
+Tnn250<- NNindices( as.matrix(dist(pc$x[, 1:250])), n_neighbors = 31)
+as.data.frame(stratNs(Tnn250, identities)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+```
+
+
 
 ## CoD on PCs (250 + 250 cells)
 
 Let's only use a few cells, so that the groups are even (250 CD4, 250 CD8 T cells):
 ```{r}
-selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
 ctFew     <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) )
+selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
+# order by celltype, then by libsize:
+selectFew <- selectFew[ order(ctFew, colSums(rawC[, selectFew]), decreasing = F) ]
 # the increment for the colsums:
 incFew    <- c( rep(-1, 250), rep(1, 250))
 
+# find exremely noisy genes, those we exclude in PCA for speed:
 vmrFew <- VMRstats(rawC[, selectFew] )
+coarse_pickFew <- rownames(
+    vmrFew[ vmrFew$log_Gene_VMR > vmrFew$log_PoissonVMR_median, ] )
+# normalize, then compute PCA: 
 normFew <- log( t(t(rawC[, selectFew]) * median(colSums(rawC[, selectFew])) /
-                  colSums(rawC[, selectFew])  ) + 1 )
-
-
-# compute PCA on (almost) all genes (minus exremely noisy ones, for speed):
-  coarse_pickFew <- rownames( vmrFew[vmrFew$log_Gene_VMR > vmrFew$log_PoissonVMR_median,] )
-  
-  
-  pcFew  <- prcomp((t(normFew[ coarse_pickFew, ])), center = TRUE, scale. = TRUE)
-  
+                  colSums(rawC[, selectFew])  ) + 1 ) 
+pcFew  <- prcomp((t(normFew[ coarse_pickFew, ])), center = TRUE, scale. = FALSE)
 ```
 
 
-### More PCs, less resolution
+### More PCs, popular neighbors and nUMI
 We can see that at one point, the more PCs we include in the distance computation,
 the less resolution we have to separate CD4 and CD8 T cells.
 ```{r}
- sqDs <- matrix(0, nrow = 500, ncol = 500)    
- few_DF <- tibble()
+sqDs <- matrix(0, nrow = nrow(pcFew$x), ncol = ncol(pcFew$x))    
+few_DF <- tibble()
 for(p in 1:500) {
- if(p %% 10) print(p)
+ if(p %% 10 == 0) print(p)
  sqDs <<- sqDs + sqDeviation(pcFew$x[, p])
-
- #if(p %% 50 ==0 | p < 50) { 
-  nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
-  correct_assignments <- apply(nns, 1, function(ids)
+ nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+ correct_assignments <- apply(nns, 1, function(ids)
       sum(ctFew[ids[2:ncol(nns)]] == ctFew[ids[1]]))
-  tmp <- tibble(  correct_assignments, Celltype = ctFew,
+ tmp <- tibble(  correct_assignments, Celltype = ctFew,
                        PCs = p) %>% # number of PC
    group_by(Celltype, PCs) %>%
    summarise(Mean_correctNeighbors = mean(correct_assignments))  
  few_DF<<- bind_rows(few_DF, tmp) 
- #}
 }
 
-ggplot(few_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+
-  ggtitle("250 CD4, 250 CD8 T cells\nAll genes -> PCA -> eucl. distance on n PCs")
+p_few <- ggplot(few_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+
+    ggtitle("(Almost) all genes -> PCA on 250 CD4 and 250 CD8 T cells\n-> eucl. distance on n PCs") + ylim(c(0,30))
+p_few + geom_vline(xintercept = 9)  
+
 
 tsneFew_9 <- Rtsne(pcFew$x[, 1:9])
 plot(tsneFew_9$Y, pch =20, col = 2+ .5 * incFew, main = "250/250 CD4/CD8 T cells\nPCs 1-9")
