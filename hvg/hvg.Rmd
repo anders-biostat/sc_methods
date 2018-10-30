@@ -602,8 +602,290 @@ tsneFew_200 <- Rtsne(pcFew$x[, 1:200])
 plot(tsneFew_200$Y, pch =20, col = 2+ .5 * incFew, main = "250/250 CD4/CD8 T cells\nPCs 1-200")
 ```
 
-So we see that including more cells gets us more noise and less resolution to
-separate CD4 and CD8 T cells. I doubt however that 
+
+
+```{r}
+Fewnn4 <- NNindices( as.matrix(dist(pcFew$x[, 1:4])), n_neighbors = 31)
+as.data.frame(stratNs(Fewnn4, ctFew)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+
+
+Fewnn100 <- NNindices( as.matrix(dist(pcFew$x[, 1:100])), n_neighbors = 31)
+as.data.frame(stratNs(Fewnn100, ctFew)) %>%
+  gather("Ntype", "Neighborhoods", -ID) %>%
+  ggplot()+geom_point(aes(ID, Neighborhoods, col = Ntype))
+
+data.frame(celltype = ctFew, libsize = colSums(rawC[, selectFew])) %>% ggplot(aes(celltype, libsize)) + geom_violin() + geom_jitter()
+```
+
+We see that deeply sequenced cells (with high nUMI) are popular neighbors.
+In fact, > 60 % of cells are no one's nearest neighbors, whereas the one or two
+dozen cells with highest sequencing coverage are neighbors of 80 or 90 % of the cells.
+
+### Simon's look at it
+```{r}
+
+
+# cell 251 is NN of 499 other cells! (found with: `which.max( table(nns) )
+
+cellA <- 489 # popular neighbor
+cellB <- 252
+cellC <- 454 
+ 
+pairs(normC[, c(cellA, cellB, cellC)], pch = 20, asp = 1,
+      labels = c(cellA, cellB, cellC))
+
+pc_corr_libsize <- 1 + (apply(pcFew$x, 2, function(pc) cor(pc, cs)) > .1)
+pc_first20      <- c(rep("red", 20), rep("black", 480))
+
+pairs( t(pcFew$x[c(cellA, cellB, cellC), ]), pch = 20,
+      labels = c(cellA, cellB, cellC), asp = 1,
+      col = pc_first20,
+      cex = pcFew$sdev / 2)
+```
+
+
+
+### 250+250, even libsizes
+Let's sample down CD4 T cells so that their library sizes are really
+similar to those of CD8 T cells.
+
+```{r}
+cs <- colSums(rawC)
+# we mask all non-CD4 cells by adding huge numbers:
+dummycs <- cs; dummycs[! isCD4Tcell ] <- dummycs[ !isCD4Tcell] + 32000
+ids <- sapply(cs[isCD8Tcell], function(ls) which.min( abs(ls - dummycs) ) )
+
+selecteven <- c(ids, which(isCD8Tcell))
+cteven     <- c( rep("CD4", 250),  rep("CD8", 250))
+
+normEven <- log( t(t(rawC[, selecteven]) * median(colSums(rawC[, selecteven])) /
+                  colSums(rawC[, selecteven])  ) + 1 ) 
+```
+
+
+
+
+
+
+
+
+
+
+
+### Regress out nUMI
+
+```{r}
+seur <- CreateSeuratObject(rawC[, selectFew],
+         meta.data = data.frame(Celltype = ctFew,
+                                row.names = colnames(rawC[, selectFew])))
+seur@data <- normFew
+# seur@var.genes <- coarse_pickFew
+seur <- ScaleData(object = seur, vars.to.regress = c("nUMI"),
+                  genes.use = coarse_pickFew, model.use = "negbinom")
+pcReg_nb  <- prcomp((t( seur@scale.data) ), center = TRUE, scale. = FALSE)
+
+seur <- ScaleData(object = seur, vars.to.regress = c("nUMI"),
+                  genes.use = coarse_pickFew, model.use = "linear")
+pcReg_l <- prcomp((t( seur@scale.data) ), center = TRUE, scale. = FALSE)
+
+# tReg <- Rtsne(pcReg$x[, 1:150])
+
+ sqDs <- matrix(0, nrow = 500, ncol = 500)    
+ nbinom_DF <- tibble()
+for(p in 1:500) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcReg_nb$x[, p])
+ nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+ correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctFew[ids[2:ncol(nns)]] == ctFew[ids[1]]))
+ tmp <- tibble(  correct_assignments, Celltype = ctFew,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ nbinom_DF <<- bind_rows(nbinom_DF, tmp) 
+}
+
+ p_nbinom <- ggplot(nbinom_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+ ylim(c(0,30))
+
+ 
+ 
+ 
+sqDs <- matrix(0, nrow = 500, ncol = 500)    
+linear_DF <- tibble()
+for(p in 1:500) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcReg_l$x[, p])
+ nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+ correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctFew[ids[2:ncol(nns)]] == ctFew[ids[1]]))
+ tmp <- tibble(  correct_assignments, Celltype = ctFew,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ linear_DF <<- bind_rows(linear_DF, tmp) 
+}
+
+ p_linear <- ggplot(linear_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype)) + ylim(0,30)
+
+```
+
+
+```{r}
+d <- dist(pcReg$x[, 1:20])
+nns <- NNindices(d, n_neighbors = 31)
+
+plot(1:500, table(nns), main = "How often is each cell amongst 30 NNs of all other cells?\n(1:250 are CD4, 251:500 are CD8")
+```
+
+
+
+
+
+
+
+
+### More Celltypes, less resolution
+
+PCA and then cell-cell distances, this time including all cells from the dataset
+
+
+
+```{r}
+# Takes a ~ 5 GB of memory:
+normCells <- log( t(t(rawC) * median(colSums(rawC)) /
+                  colSums(rawC)  ) + 1 )
+
+
+# compute PCA on (almost) all genes (minus exremely noisy ones, for speed):
+vmrCells <- VMRstats( rawC )
+coarse_pickCells<- rownames( vmrCells[vmrCells$log_Gene_VMR > vmrCells$log_PoissonVMR_median,] )
+
+# takes ~ 10 GB of memory, runs > 25 min
+# pcCells<- prcomp((t(normCells[ coarse_pickCells, ])), center = TRUE, scale. = TRUE)
+
+```
+Distances for these cells:
+```{r}
+
+sqDs <- matrix(0, nrow = 500, ncol = 500)    
+ cells_DF <- tibble()
+for(p in 1876:8005) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcCells$x[selectFew, p])
+
+ #if(p %% 50 ==0 | p < 50) { 
+  nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+  correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctFew[ids[2:ncol(nns)]] == ctFew[ids[1]]))
+  tmp <- tibble(  correct_assignments, Celltype = ctFew,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ cells_DF <<- bind_rows(cells_DF, tmp) 
+ #}
+}
+
+ggplot(cells_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+
+  ggtitle("(Almost) all genes -> PCA on all 8005 cells\n-> eucl. distance between 250 CD4 and 250 CD8 T cells on n PCs") + ylim(c(0,30)) + 
+  xlim(c(0,500))
+```
+
+
+### Celltype proportion
+
+First we pick 250 other CD4 T cells and see how much the result differs from above,
+to control for heterogeneity within the CD4 cells:
+```{r}
+furtherCD4 <- sample(setdiff(which(isCD4Tcell), selectFew), 250)
+
+selectFurther <- c(furtherCD4, which(isCD8Tcell))
+
+
+
+
+# find exremely noisy genes, those we exclude in PCA for speed):
+vmrFurther <- VMRstats(rawC[, selectFurther] )
+normFurther <- log( t(t(rawC[, selectFurther]) * median(colSums(rawC[, selectFurther])) /
+                  colSums(rawC[, selectFurther])  ) + 1 )
+coarse_pickFurther <- rownames(
+    vmrFurther[ vmrFurther$log_Gene_VMR > vmrFurther$log_PoissonVMR_median, ] )
+  
+  
+pcFurther<- prcomp((t(normFurther[ coarse_pickFurther, ])), center = TRUE, scale. = FALSE)
+ 
+```
+
+let's show the 250 other CD4 picked here give the same results as above:
+```{r}
+sqDs <- matrix(0, nrow = 500, ncol = 500)    
+further_DF <- tibble()
+for(p in 1:500) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcFurther$x[, p])
+
+ #if(p %% 50 ==0 | p < 50) { 
+  nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+  correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctFew[ids[2:ncol(nns)]] == ctFew[ids[1]])) # ctFew still valid for further CD4
+  tmp <- tibble(  correct_assignments, Celltype = ctFew,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ further_DF <<- bind_rows(further_DF, tmp) 
+ #}
+}
+p_further <- ggplot(further_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+
+    ggtitle("(Almost) all genes -> PCA on 250 __other__ CD4 and 250 CD8 T cells\n-> eucl. distance on n PCs") + ylim(c(0,30))
+cowplot::plot_grid(p_few, p_further, nrow = 2)
+```
+
+This shows they're highly similar. We can now investigate what happens when we do
+500 CD4 and 250 CD8 T cells:
+
+```{r}
+selectProp <- c(furtherCD4, selectFew)
+# selectProp now has indices of 500 CD4 cells followed by those of 250 CD8 cells.
+# However, I only take __250/250__ here as well, as I want to read out the same
+# cells as above:
+ctProp     <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) ) 
+
+# find exremely noisy genes, those we exclude in PCA for speed):
+vmrProp  <- VMRstats(rawC[, selectProp] )
+normProp <- log( t(t(rawC[, selectProp]) * median(colSums(rawC[, selectProp])) /
+                  colSums(rawC[, selectProp])  ) + 1 )
+coarse_pickProp <- rownames(
+    vmrProp[ vmrProp$log_Gene_VMR > vmrProp$log_PoissonVMR_median, ] )
+  
+  
+pcProp <- prcomp((t(normProp[ coarse_pickProp, ])), center = TRUE, scale. = FALSE)
+```
+
+```{r}
+sqDs <- matrix(0, nrow = 500, ncol = 500)    
+prop_DF <- tibble()
+for(p in 1:750) {
+ if(p %% 10 == 0) print(p)
+ sqDs <<- sqDs + sqDeviation(pcProp$x[251:750, p])
+ nns  <- NNindices(as.matrix(sqrt(sqDs)), n_neighbors = 31)
+  correct_assignments <- apply(nns, 1, function(ids)
+      sum(ctProp[ids[2:ncol(nns)]] == ctProp[ids[1]]))
+  tmp <- tibble(  correct_assignments, Celltype = ctProp,
+                       PCs = p) %>% # number of PC
+   group_by(Celltype, PCs) %>%
+   summarise(Mean_correctNeighbors = mean(correct_assignments))  
+ prop_DF <<- bind_rows(prop_DF, tmp) 
+}
+
+
+p_prop <- ggplot(prop_DF) + geom_point(aes(PCs, Mean_correctNeighbors, colour = Celltype))+
+    ggtitle("(Almost) all genes -> PCA on 500 CD4 and 250 CD8 T cells\n-> eucl. distance between same 250/250 cells as above on n PCs") + ylim(c(0,30))
+cowplot::plot_grid(p_few, p_prop, nrow = 2)
+```
+
+
+
 
 
 
