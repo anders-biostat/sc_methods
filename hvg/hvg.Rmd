@@ -343,6 +343,7 @@ and between CD4 and CD8 T cells become better and worse.
 Useful to pick colors for CD4 and CD8 
 once and then use them consistently throughout this script.
 ```{r}
+library(RColorBrewer)
 dark2 <- brewer.pal(8, "Dark2")
 myCols <- scale_colour_manual(values = c("CD4" = dark2[2], "CD8" = dark2[5]))
 ```
@@ -407,6 +408,28 @@ plot_grid(
 
 
 
+## Filter Genes
+I have observed that genes that are only >0 in 1 or 2 cells are captured by
+PC1 after regressing library size, simply because regression changes the 0s
+into a downward-tilted line (see powerpoint presentation).
+
+To be fair, I'll repeat these findings after filtering genes by their
+variance/expression, for this I use our VMR on raw counts:
+
+```{r}
+vfew <- VMRstats(rawC[, selectFew])
+veven<- VMRstats(rawC[, selecteven])
+
+universe <- unique(
+  c(rownames(vfew)[vfew$aboveP > 1 & vfew$log_Gene_Mean > -12] ,
+    rownames(veven)[veven$aboveP > 1 & veven$log_Gene_Mean > -12] ) 
+  )
+```
+
+
+
+
+
 ## Normalize data
 I will compare euclidean distances with increasing numbers of features: 
   normalized gene expression directly, 
@@ -425,6 +448,7 @@ normeven <- log( t(t(rawC[, selecteven]) * median(colSums(rawC[, selecteven])) /
 
 Normalize with seurat (selectFew):
 ```{r}
+library(Seurat)
 s <- CreateSeuratObject(rawC[, selectFew])
 
 mito <- rownames(s@data)[grepl("HUMAN_MT-", rownames(s@data))]
@@ -434,8 +458,11 @@ s   <- AddMetaData(s,
 s <- NormalizeData(s)
 s <- FindVariableGenes(s)
 
-noR <- ScaleData(s, genes.use = rownames(s@data), vars.to.regress = NULL)
-R   <- ScaleData(s, genes.use = rownames(s@data), vars.to.regress = c("nUMI", "percent.mito"))
+
+##    use genes after filtering only
+noR <- ScaleData(s, genes.use = universe, vars.to.regress = NULL)
+R   <- ScaleData(s, genes.use = universe, vars.to.regress = 
+                   c("nUMI", "percent.mito"))
 
 
 # extract normalized counts:
@@ -443,20 +470,22 @@ seurat_norm <- noR@scale.data
 seurat_regr <-   R@scale.data
 ```
 
-## Compute PCA:
+## Compute PCA
+I've seen that regression introduces artifactual genes into PC1 if you use
+all genes, so here I'll only use filtered genes ('universe'):
 ```{r}
-pcFew  <- prcomp((t(normFew)), center = TRUE, scale. = FALSE)
+pcFew  <- prcomp((t(normFew[universe, ])), center = TRUE, scale. = FALSE)
 
-pc_seurat_norm <- prcomp(t(noR@scale.data),
+pc_seurat_norm <- prcomp(t(noR@scale.data[universe, ]),
                          center = TRUE , scale. = FALSE)
-pc_seurat_regr <- prcomp(t(  R@scale.data),
+pc_seurat_regr <- prcomp(t(  R@scale.data[universe, ]),
                          center = TRUE , scale. = FALSE)
 
 # for even library sizes:
-pceven<- prcomp((t(normeven)), center = TRUE, scale. = FALSE)
+pceven<- prcomp((t(normeven[universe, ])), center = TRUE, scale. = FALSE)
 ```
 
-## NNs readout
+## correctNeighbors function as readout
 ```{r}
 
 correctNeighbors <- function(prcompObj = NULL,
@@ -483,16 +512,19 @@ correctNeighbors <- function(prcompObj = NULL,
 ```
 
 
-## Playground
+## Playground NN readout
 I change the below codechunk again and again to generate plots - these 
 plots are pasted into a powerpoint presentation.
-```{r message=FALSE}
-tbl_1 <- correctNeighbors(pc_seurat_norm , ct, 31)
+
+
+```{r message=FALSE, warning=FALSE, silent=TRUE}
+tbl_noR <- correctNeighbors(pc_seurat_norm, ct, 31)
+tbl_R <- correctNeighbors(pc_seurat_regr, ct, 31)
+
+tbl_1 <- tbl_R
 ```
 Plot correctly assigned nearest neighbors:
 ```{r fig.height=3.5, fig.width=10}
-
-
 cowplot::plot_grid(
      ggplot(tbl_1) + geom_point(aes(PCs, Mean_correctNeighbors, col=Celltype))+
      ylim(0, 30) +  myCols + theme(legend.position = "top"),
@@ -504,13 +536,51 @@ cowplot::plot_grid(
      ncol = 2, 
      rel_widths = c(3,1)
 )
-     
 ```
 
 
 
 
+## Effect of regression
+I want to look Gene-Libsize scatter plots, and start with genes that are contributing
+most to PCs and thus will influence all further analysis.
+```{r}
+s_R <- RunPCA(R, pc.genes = universe )
 
+Gs <- 
+  apply(s_R@dr$pca@gene.loadings, 2, function(PC) {
+    order(abs(PC), decreasing = TRUE)[1:5] 
+  })
+
+
+PC = 2
+topgenes <- rownames(s_R@dr$pca@gene.loadings)[Gs[, PC]]
+
+ data.frame(libsize = colSums(R@raw.data),  t( R@raw.data[topgenes, ] )) %>%
+   gather(key = "Gene", value ="Expression", -libsize) %>% 
+   ggplot() + geom_point(aes(libsize, Expression), size=.4) + facet_wrap( ~ Gene, scale = "free_y" )
+```
+
+## Which genes to regress?
+Lowly expressed genes will get heavily biased by regressing out nUMI, because
+all zeros end up as a straight line with negative slope.
+Perhaps we can spot and exclude these genes, and perhaps even genes where
+the dependency is real but non-linear, by comparing Pearson and Spearman 
+correlations:
+
+```{r}
+pcor <- cor(t(s@raw.data), colSums(s@raw.data) )
+scor <- cor(t(s@raw.data), colSums(s@raw.data), method = "spearman" )
+
+plot(scor[,1], pcor[,1], pch=20, cex=.4, col = adjustcolor("black", alpha.f = .1),
+     main = "Cor(Gene_x, nUMI)\nred: Genes with exactly 1 UMI in entire dataset\n10X data (500 T cells from CBMCs)",
+     xlab = "Spearman Correlation (with nUMI)", ylab = "Pearson Correlation (with nUMI")
+oneExpressor <- rowSums(s@raw.data) == 1
+points(scor[oneExpressor,1], pcor[oneExpressor,1], pch = 20, col="red")
+
+
+
+```
 
 
 
