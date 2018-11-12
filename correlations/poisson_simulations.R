@@ -100,10 +100,112 @@ round(cbind(var =apply(log1p(counts), 2, var) ,prcomp(log1p(counts))$rotation), 
 
 
 
+# custom functions  ------------------------------------------------------
+# useful to understand what's going on with top genes during PCA and weighted PCA.
+
+
+ct_boxplot <- function(cellInfo = factor(sort(rep(1:2, 250))),
+                       pca, pcs=1:6, plot_cols = 3, plot_rows=2) {
+     par(mfrow = c(plot_rows, plot_cols))
+    sapply(pcs, function(i) {
+      scores <- pca$x[, i]
+      plot(cellInfo, scores, main = paste0("PC", i))
+    }); par(mfrow = c(1, 1))
+}
+
+markGeneRotations <- function(genesOfInterest.,
+                              loadings. = pca$rotation[, 1],
+                              n_pcTop. = 100,
+                              interest_col. = "red",
+                              ...) {
+  topPCgenes <-head(loadings.[order(abs(loadings.), decreasing = T)], n_pcTop.)
+  positionsOfInterest <- which( names(topPCgenes) %in% genesOfInterest.)
+  set.seed(100)
+  x <- rnorm(length(topPCgenes))
+  plot(x, topPCgenes, pch = 20,
+       ylab = paste0("Gene Loading  (Top ", n_pcTop., " genes of PC", i, ")"),
+       xlab = "jitter",
+       ...)
+  points(x[positionsOfInterest], topPCgenes[positionsOfInterest], col = interest_col., pch =20)
+}
+
+# Wrapper for markGeneRotations:
+rotationPlot <- function(genesOfInterest,
+                         pca,
+                         pcs=1:6,
+                         title = NULL,
+                         n_pcTop=100,
+                         interest_col = "red",
+                         plot_cols=3,
+                         plot_rows=2) {
+    par(mfrow = c(plot_rows,plot_cols), oma = c(0, 0, 2, 0))
+    sapply(pcs, function(i) {
+      markGeneRotations(genesOfInterest. = genesOfInterest,
+                        loadings. = pca$rotation[, i], n_pcTop. = n_pcTop ,
+                        interest_col. =  interest_col,
+                        main = paste0("PC", i))
+    })
+    mtext(title, outer = TRUE, cex = 1.5); par(mfrow = c(1,1), oma = c(0,0,0,0))
+}
 
 
 
 
+
+
+# Weight PCA by VMR -------------------------------------------------------
+
+#
+#    load CITEseq T cells (250 CD4, 250 CD8 T cells) using script
+#    hvg.Rmd
+
+# get data (after executing some sections in hvg.Rmd):
+ct <- factor( c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) ), levels = c("CD4", "CD8"))
+vs <- VMRstats(rawC[, selecteven])
+normeven <- log( t(t(rawC[, selecteven]) * median(colSums(rawC[, selecteven])) /
+                  colSums(rawC[, selecteven])  ) + 1 ) 
+normeven <- normeven[ rownames(vs), ]
+
+
+
+# normal PCA (lognormalization, no scaling):
+logPCA <- prcomp(t(normeven))
+
+ct_boxplot(cellInfo = ct, pca = logPCA, 1:6)
+
+rotationPlot(rownames(vs)[vs$aboveP > 5],
+             logPCA,
+             title = "Normal PCA on lognormalized counts\naboveP > 5")
+rotationPlot(rownames(vs)[vs$aboveP < .5],
+             logPCA,interest_col = "green",
+             title = "Normal PCA on lognormalized counts\nNoisy genes (aboveP < .5")
+
+logTSNE <- Rtsne::Rtsne(logPCA$x[, 1:6])
+plot(logTSNE$Y, col = ct)
+
+
+# weighted PCA (scale genes to unit variance, then inflate ~ `aboveP`)
+
+
+
+unit_counts     <- t( scale(t(normeven[ rownames(vs)[vs$aboveP>0], ])))
+weighted_counts <- unit_counts * sqrt(vs$aboveP[vs$aboveP>0])
+
+
+vmrPCA <- prcomp(t(weighted_counts))
+
+ct_boxplot(cellInfo = ct, pca = vmrPCA, 1:6)
+#
+#  We see that all PCs have one or two outlier cells that are very far away from
+#  all others. This is because using 'aboveP' as weights overemphasizes a few
+#  genes; the cell expressing such a gene the highest will be an extreme outlier.
+#
+# To do:   try empirical bayes to shrink 'aboveP' to something more moderate!
+
+
+
+ 
+  
 
 # Pearson correlation under Poisson noise ---------------------------------------
 c1 <- cor(
