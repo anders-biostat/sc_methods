@@ -199,13 +199,18 @@ VMRstats <- function(mat = rawC, nbin_qreg = 75) {
   return(df)
 } 
 
+vmrPlot <- function(vmrstat) {
+    plot(vmrstat$log_Gene_Mean, vmrstat$log_Gene_VMR, pch = 20, cex=.1, 
+         xlab = "log( estim_mean )", ylab = "log( estim_var / estim_mean )")
+    points(vmrstat$log_Gene_Mean,vmrstat$log_PoissonVMR_median, pch = ".", col = "orange")
+    points(vmrstat$log_Gene_Mean,vmrstat$log_PoissonVMR_q75, pch = ".", col = "orange")
+  }
+  
+vmrPoints <- function(vmrstat, sel) {# sel is a true/false boolean vector selecting genes
+    points(vmrstat[sel, "log_Gene_Mean"], vmrstat[sel, "log_Gene_VMR"],
+           col="red", pch=20)
+    }
 
-getHVG <- function(vmrstats = VMRstats(rawCounts), IQRs = 10) {
-  # returns genes that are more than n IQRs away (default: n = 10).
-  hvg  <- vmrstats$log_Gene_VMR >
-         vmrstats$log_PoissonVMR_median + IQRs * vmrstats$IQR_of_logged_VMR
-  return(vmrstats[hvg, ])
-}
 ```
 
 # Other Functions
@@ -381,7 +386,7 @@ simil <- t(sapply(cs[isCD8Tcell], function(libsize) {
   order(abs(libsize - dummycs), decreasing = FALSE)
 }))
 ids <- sample( unique(as.vector(simil[, 1:2])),  250 )
-
+ids <- ids[order(colSums(rawC[, ids]), decreasing = T)] # sorted by libsize can help to find artifacts
 selecteven <- c(ids, which(isCD8Tcell))
 ```
 
@@ -416,7 +421,7 @@ into a downward-tilted line (see powerpoint presentation).
 To be fair, I'll repeat these findings after filtering genes by their
 variance/expression, for this I use our VMR on raw counts:
 
-```{r}
+```{r tcellVMR, results= hide}
 vfew <- VMRstats(rawC[, selectFew])
 veven<- VMRstats(rawC[, selecteven])
 
