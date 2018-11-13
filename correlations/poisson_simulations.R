@@ -123,7 +123,7 @@ markGeneRotations <- function(genesOfInterest.,
   set.seed(100)
   x <- rnorm(length(topPCgenes))
   plot(x, topPCgenes, pch = 20,
-       ylab = paste0("Gene Loading  (Top ", n_pcTop., " genes of PC", i, ")"),
+       ylab = paste0("Gene Loading  (Top ", n_pcTop., " genes", ")"),
        xlab = "jitter",
        ...)
   points(x[positionsOfInterest], topPCgenes[positionsOfInterest], col = interest_col., pch =20)
@@ -204,7 +204,9 @@ ct_boxplot(cellInfo = ct, pca = vmrPCA, 1:6)
 
 
 
- 
+
+
+  
   
 
 # Pearson correlation under Poisson noise ---------------------------------------
@@ -262,4 +264,4 @@ points(
 
 
 
-  
+ 
