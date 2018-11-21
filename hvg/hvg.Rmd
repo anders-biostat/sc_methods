@@ -53,6 +53,8 @@ normC <- apply( rawC, 2, function(col) {
   (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
 })
 
+normC <- log1p(t( t(rawC) * 2300 / colSums(rawC)))
+
 ```
 
 
@@ -328,10 +330,14 @@ plausible_sf <- rf(1000,20,22, 0)
 library(ggplot2)
 library(pbmcapply) # parallelization
 library(quantreg)  # quantile regression with rq.wfit
+library(pheatmap)
 library(parallelDist)
 library(tidyverse)
 library(Rtsne)
 load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/start_hvg.rda")
+
+
+normC <- log1p(t( t(rawC) * 2300 / colSums(rawC)))
 ```
 
 
@@ -351,6 +357,10 @@ once and then use them consistently throughout this script.
 library(RColorBrewer)
 dark2 <- brewer.pal(8, "Dark2")
 myCols <- scale_colour_manual(values = c("CD4" = dark2[2], "CD8" = dark2[5]))
+
+
+# for expression heatmap:
+colPal <- colorRampPalette(rev(brewer.pal(5, "RdBu")))(10)
 ```
 
 ## Select cells (250+250)
