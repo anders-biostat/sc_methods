@@ -49,7 +49,7 @@ prot <- prot[, ! is_mouse]
 # RNA data: normalization
 
 ```{r}
-normC <- apply( rawC, 2, function(col) {
+normC_anscombe <- apply( rawC, 2, function(col) {
   (sqrt(col+3/8)-sqrt(3/8)) / sqrt(sum(col))
 })
 
@@ -337,7 +337,7 @@ library(Rtsne)
 load(file = "/home/felix/PhDother/scAnalysis/sc_methods/hvg/savepoint/start_hvg.rda")
 
 
-normC <- log1p(t( t(rawC) * 2300 / colSums(rawC)))
+normC <- log1p(t( t(rawC) / colSums(rawC)))
 ```
 
 
@@ -423,7 +423,7 @@ plot_grid(
 
 
 
-## Filter Genes
+## Filter Genes [vfew, veven]
 I have observed that genes that are only >0 in 1 or 2 cells are captured by
 PC1 after regressing library size, simply because regression changes the 0s
 into a downward-tilted line (see powerpoint presentation).
@@ -445,7 +445,7 @@ universe <- unique(
 
 
 
-## Normalize data
+## Normalize data [normFew, normeven]
 I will compare euclidean distances with increasing numbers of features: 
   normalized gene expression directly, 
   PCs on normalized genes, 
@@ -490,9 +490,13 @@ I've seen that regression introduces artifactual genes into PC1 if you use
 all genes, so here I'll only use filtered genes ('universe'):
 ```{r}
 pcFew  <- prcomp((t(normFew[universe, ])), center = TRUE, scale. = FALSE)
+hvg1 <- rownames(vfew)[vfew$aboveP > 4]
+hvg1 <- hvg1[hvg1 %in% universe]
+pcFew_hvg1  <- prcomp((t(normFew[ hvg1, ])), center = TRUE, scale. = FALSE)
 
 pc_seurat_norm <- prcomp(t(noR@scale.data[universe, ]),
                          center = TRUE , scale. = FALSE)
+
 pc_seurat_regr <- prcomp(t(  R@scale.data[universe, ]),
                          center = TRUE , scale. = FALSE)
 
@@ -500,14 +504,14 @@ pc_seurat_regr <- prcomp(t(  R@scale.data[universe, ]),
 pceven<- prcomp((t(normeven[universe, ])), center = TRUE, scale. = FALSE)
 ```
 
-## correctNeighbors function as readout
+## [function:] correctNeighbors function as readout
 ```{r}
 
 correctNeighbors <- function(prcompObj = NULL,
                              celltypeInfo = NULL,
                              n_neighbors = 31) {
   # initialize variables:
-  sqDs <- matrix(0, nrow = nrow(prcompObj$x), ncol = ncol(prcompObj$x))    
+  sqDs <- matrix(0, nrow = nrow(prcompObj$x), ncol = nrow(prcompObj$x))    
   results <- tibble()
   # loop through all PCs:
   for(p in 1:ncol(prcompObj$x)) {
@@ -525,6 +529,38 @@ correctNeighbors <- function(prcompObj = NULL,
   return(results)
 }
 ```
+
+## [function:] sepScores, ct_boxplot
+```{r}
+sepScores <- function(cellInfo = factor(sort(rep(1:2, 250))),
+                      pca, pcs=1:6, ...) {
+ # compute separation scores:
+  is_A <- cellInfo == unique(cellInfo)[1] 
+  sepScores <- sapply(pcs, function(i) {
+        pc <- pca$x[, i] 
+        pc_sep <- ( mean(pc[is_A]) - mean(pc[!is_A]) )  /  sum( sd(pc[is_A]), sd(pc[!is_A])   )
+        pc_sep
+        })
+  names(sepScores) <- paste0("PC", pcs)
+ # outut a plot:
+  ys <- max(1.5, max(abs(sepScores)))
+  plot(pcs, abs(sepScores), ylim = c(-.1, ys), pch=20, ...);
+  abline(h=0, col = adjustcolor("black", alpha.f = .4))
+  # end
+ return(sepScores)
+}
+
+ct_boxplot <- function(cellInfo = factor(sort(rep(1:2, 250))),
+                       pca, pcs=1:6, plot_cols = 3, plot_rows=2) {
+     par(mfrow = c(plot_rows, plot_cols))
+    sapply(pcs, function(i) {
+      scores <- pca$x[, i]
+      plot(cellInfo, scores, main = paste0("PC", i))
+    }); par(mfrow = c(1, 1))
+}
+```
+
+
 
 
 ## Playground NN readout
@@ -596,13 +632,6 @@ points(scor[oneExpressor,1], pcor[oneExpressor,1], pch = 20, col="red")
 
 
 ```
-
-
-
-
-
-
-
 
 
 
