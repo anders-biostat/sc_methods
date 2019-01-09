@@ -54,7 +54,12 @@ normC_anscombe <- apply( rawC, 2, function(col) {
 })
 
 normC <- log1p(t( t(rawC) * 2300 / colSums(rawC)))
-
+###        DEPRECATED!!!             ###
+###        delete 2300! it's only    ###
+###        here to not break         ###
+###        reproducibility with next ###
+###        section.                  ###
+###        Savepoint below fixes it  ###
 ```
 
 
@@ -108,6 +113,82 @@ norm_prot <- apply(prot, 1, function(x) {
   
   
 Ts <- isCD4Tcell | isCD8Tcell
+```
+
+# Select CD4 and CD8 T cells
+
+
+
+## Colour scheme
+Useful to pick colors for CD4 and CD8 
+once and then use them consistently throughout this script.
+```{r}
+library(RColorBrewer)
+dark2 <- brewer.pal(8, "Dark2")
+myCols <- scale_colour_manual(values = c("CD4" = dark2[2], "CD8" = dark2[5]))
+
+
+# for expression heatmap:
+colPal3 <- colorRampPalette(rev(brewer.pal(5, "RdBu")))(10)
+colPal2 <- c("grey", colorRampPalette((brewer.pal(9, "YlOrRd")))(100) )
+```
+
+## Select cells (250+250)
+I want the groups (CD4 and CD8) to be even, so I draw 250 CD4 T cells (out of
+almost 3000). Note that CD8 T  cells **systematically have higher library sizes**
+than CD4 T cells. To investigate the effect of this, I draw twice: once randomly,
+and once so that libsizes roughly match.
+
+Convention: I'll always list the 250 CD4 cells first, followed by 250 CD8 T cells:
+```{r}
+ct <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) )
+```
+
+
+1. Randomly draw 250 CD4 cells:
+```{r}
+selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
+# order by celltype, then by libsize:
+selectFew <- selectFew[ order(ct, colSums(rawC[, selectFew]), decreasing = F) ]
+```
+2. match library sizes of selected CD4 cells to the 250 CD8 T cells
+in the CITEseq dataset:
+```{r}
+cs <- colSums(rawC)
+# we mask all non-CD4 cells by adding huge numbers:
+dummycs <- cs; dummycs[! isCD4Tcell ] <- dummycs[ !isCD4Tcell] + 32000
+# for each CD8 cell, we'll put the CD4 cell with most similar library size
+# into the first column of the `simil` matrix, the second most similar into
+# the second column, etc. The first column has duplicates, so them alone would
+# not be 250 cells. But taking the first two columns together we have enough
+# unique CD4 T cells to draw 250 from them:
+simil <- t(sapply(cs[isCD8Tcell], function(libsize) {
+  order(abs(libsize - dummycs), decreasing = FALSE)
+}))
+ids <- sample( unique(as.vector(simil[, 1:2])),  250 )
+ids <- ids[order(colSums(rawC[, ids]), decreasing = T)] # sorted by libsize can help to find artifacts
+selecteven <- c(ids, which(isCD8Tcell))
+```
+
+You see here that it makes quite some difference:
+```{r cd4_cd8_libsizes, fig.height=6, fig.width=9}
+plot_grid(
+   data.frame(libsize = colSums(rawC[, selectFew]), Celltype = ct) %>%
+  ggplot(aes(Celltype, libsize, col = Celltype))+
+  geom_violin(draw_quantiles = c(.5)) +
+  geom_jitter() + ylim(c(0,8500)) +
+  ggtitle("250 random CD4 T cells\nRcode: selectFew") +
+  myCols + theme(legend.position = "none"),
+  
+  data.frame(libsize = colSums(rawC[, selecteven]), Celltype = ct) %>%
+  ggplot(aes(Celltype, libsize, col = Celltype))+
+  geom_violin(draw_quantiles = c(.5)) +
+  geom_jitter() +ylim(c(0,8500)) +
+    ggtitle("Samples for even library sizes\nRcode: selecteven") +
+    myCols + theme(legend.position = "none"),
+  
+  ncol = 2
+)
 ```
 
 
@@ -350,78 +431,6 @@ Here I will pick more and more HVGs and/or PCs to show the distances within
 and between CD4 and CD8 T cells become better and worse.
 
 
-## Colour scheme
-Useful to pick colors for CD4 and CD8 
-once and then use them consistently throughout this script.
-```{r}
-library(RColorBrewer)
-dark2 <- brewer.pal(8, "Dark2")
-myCols <- scale_colour_manual(values = c("CD4" = dark2[2], "CD8" = dark2[5]))
-
-
-# for expression heatmap:
-colPal <- colorRampPalette(rev(brewer.pal(5, "RdBu")))(10)
-```
-
-## Select cells (250+250)
-I want the groups (CD4 and CD8) to be even, so I draw 250 CD4 T cells (out of
-almost 3000). Note that CD8 T  cells **systematically have higher library sizes**
-than CD4 T cells. To investigate the effect of this, I draw twice: once randomly,
-and once so that libsizes roughly match.
-
-Convention: I'll always list the 250 CD4 cells first, followed by 250 CD8 T cells:
-```{r}
-ct <- c( rep("CD4", 250), rep("CD8", sum(isCD8Tcell)) )
-```
-
-
-1. Randomly draw 250 CD4 cells:
-```{r}
-selectFew <- c(sample(which(isCD4Tcell), 250), which(isCD8Tcell))
-# order by celltype, then by libsize:
-selectFew <- selectFew[ order(ct, colSums(rawC[, selectFew]), decreasing = F) ]
-```
-2. match library sizes of selected CD4 cells to the 250 CD8 T cells
-in the CITEseq dataset:
-```{r}
-cs <- colSums(rawC)
-# we mask all non-CD4 cells by adding huge numbers:
-dummycs <- cs; dummycs[! isCD4Tcell ] <- dummycs[ !isCD4Tcell] + 32000
-# for each CD8 cell, we'll put the CD4 cell with most similar library size
-# into the first column of the `simil` matrix, the second most similar into
-# the second column, etc. The first column has duplicates, so them alone would
-# not be 250 cells. But taking the first two columns together we have enough
-# unique CD4 T cells to draw 250 from them:
-simil <- t(sapply(cs[isCD8Tcell], function(libsize) {
-  order(abs(libsize - dummycs), decreasing = FALSE)
-}))
-ids <- sample( unique(as.vector(simil[, 1:2])),  250 )
-ids <- ids[order(colSums(rawC[, ids]), decreasing = T)] # sorted by libsize can help to find artifacts
-selecteven <- c(ids, which(isCD8Tcell))
-```
-
-You see here that it makes quite some difference:
-```{r cd4_cd8_libsizes, fig.height=6, fig.width=9}
-plot_grid(
-   data.frame(libsize = colSums(rawC[, selectFew]), Celltype = ct) %>%
-  ggplot(aes(Celltype, libsize, col = Celltype))+
-  geom_violin(draw_quantiles = c(.5)) +
-  geom_jitter() + ylim(c(0,8500)) +
-  ggtitle("250 random CD4 T cells\nRcode: selectFew") +
-  myCols + theme(legend.position = "none"),
-  
-  data.frame(libsize = colSums(rawC[, selecteven]), Celltype = ct) %>%
-  ggplot(aes(Celltype, libsize, col = Celltype))+
-  geom_violin(draw_quantiles = c(.5)) +
-  geom_jitter() +ylim(c(0,8500)) +
-    ggtitle("Samples for even library sizes\nRcode: selecteven") +
-    myCols + theme(legend.position = "none"),
-  
-  ncol = 2
-)
-```
-
-
 
 ## Filter Genes [vfew, veven]
 I have observed that genes that are only >0 in 1 or 2 cells are captured by
@@ -452,6 +461,10 @@ I will compare euclidean distances with increasing numbers of features:
   PCs on regressed (nUMI, ...) genes.
 
 Normalize by hand (selectFew and selecteven):
+  #    careful!  (note from 9th January 2019):
+  #    including scale factor (here, the 'median(...)`) messes up linear combinations,
+  #    so the following code and everything built upon normFew/normeven is taken
+  #    with a pinch of salt!
 ```{r}
 normFew  <- log( t(t(rawC[, selectFew]) * median(colSums(rawC[, selectFew])) /
                   colSums(rawC[, selectFew])  ) + 1 ) 
@@ -632,6 +645,712 @@ points(scor[oneExpressor,1], pcor[oneExpressor,1], pch = 20, col="red")
 
 
 ```
+
+
+
+
+
+
+
+
+# Prior information from bulk data
+
+It's a common case that you might have dozens to hundreds of bulk DEGs and
+want to use this as prior information to resolve cells. I play around with this
+here, using the somewhat artificial case of pseudobulks from the same cells as 
+I want to resolve later.
+
+Useful functions:
+```{r}
+linMap <- function(x, from, to) (x - min(x)) / max(x - min(x)) * (to - from) + from
+
+comparableGenes <- function(B = c("Dl", "ed", "pros"),
+                             rawCountMatrix = prog_raw,
+                             notThese = NULL) {
+    rawCountMatrix <- rawCountMatrix[, colSums(rawCountMatrix) != 0]
+    latentMeans <- base::colMeans(t(rawCountMatrix) / colSums(rawCountMatrix)) 
+    orderedMeans <- sort(latentMeans, decreasing = T)   
+    B_pos      <- which(names(orderedMeans) %in% B)
+    notThese_pos      <- which(names(orderedMeans) %in% notThese)
+    notB_pos   <- which(!names(orderedMeans) %in% B)
+    random_pos <- B_pos
+    counter <- 0
+    while(sum(duplicated(random_pos))  |  sum(random_pos %in% c(B_pos, notThese_pos) ) ) {
+      counter <- counter+1
+      print(counter)
+      needsChange <- duplicated(random_pos) | random_pos %in% c(B_pos, notThese_pos)
+      step <- c(-1, 1)
+      random_pos[needsChange] <- random_pos[needsChange] + sample(step, sum(needsChange), replace = T)
+      if(counter > 5000) {stop("Shuffling never converges. Are there enough genes to shuffle to?")}
+   }
+    random_genes <- names(orderedMeans)[random_pos]
+    
+    # nice output plot:
+   suppressWarnings(qqplot(
+       latentMeans[B],
+       latentMeans[random_genes],
+       log="xy", pch = 20, cex=.8,
+       main = "QQ-Plot (log-transformed Axis",
+       xlab = "Signature Genes",
+       ylab = "Randomly Sampled Genes") )
+   legend("bottomright",
+            paste0("0s: ", 
+                  sum(latentMeans[B] == 0)), bty="n")
+   legend("topleft",
+            paste0("0s: ", 
+                  sum(latentMeans[random_genes] == 0)), bty="n")
+   abline(0,1)
+    
+   return(random_genes)
+}
+```
+
+Get "pseudobulk" DEGs:
+```{r}
+a8 <- sample(x = which(isCD8Tcell), size = 125)
+b8 <- which(isCD8Tcell)[! which(isCD8Tcell) %in% a8]
+
+a4 <- sample(x = which(isCD4Tcell), size = 1300)
+b4 <- which(isCD4Tcell)[! which(isCD4Tcell) %in% a4]
+
+library(DESeq2)
+
+pseudobulk <- DESeqDataSetFromMatrix(
+  countData = cbind( CD4_a = rowSums(rawC[, a4]),
+                     CD4_b = rowSums(rawC[, b4]),
+                     CD8_a = rowSums(rawC[, a8]),
+                     CD8_b = rowSums(rawC[, b8])  ),
+  colData = data.frame(Celltype = c("CD4", "CD4", "CD8", "CD8"),
+                       row.names=c("CD4_a", "CD4_b", "CD8_a", "CD8_b")),
+  design = ~ Celltype
+)
+
+pseudobulk <- DESeq(pseudobulk)
+res <- results(pseudobulk)
+res <- res[which(res$padj < .05),]                     
+
+cd8_up <- rownames(res[res$log2FoldChange > 1,])
+cd4_up <- rownames(res[res$log2FoldChange < -1,])
+```
+
+Separating cells works acceptably well, but it's hard to simulate a stochastic
+background (orange dots).
+
+Here is it with completely random genes. Run it multiple times and observe how
+it's drastically changing everytime!:
+```{r}
+plot(sqrt(colSums( rawC[cd8_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+     sqrt(colSums(rawC[cd4_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+     pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+     col = c(rep("blue", sum(isCD4Tcell)), rep("red", sum(isCD8Tcell))),
+     main = "Orange: Completely random genes",
+     xlab = "CD8 >> CD4",
+     ylab = "CD4 >> CD8")
+
+points(sqrt(colSums( rawC[sample(rownames(rawC), length(mock_cd8_up)),   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+       sqrt(colSums(rawC[sample(rownames(rawC), length(mock_cd4_up)),    c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+       pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+       col = "orange")
+
+```
+
+
+Here we pick genes with same means, expecting naively this would balance out
+things. But no, CD4 cells are 10x more abundant, and so genes with similar means
+often are those expressed highly by CD4 cells - again biasing us:
+```{r}
+v_T <- VMRstats(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))])
+rownames(v_T)
+
+mock_cd8_up <- comparableGenes(cd8_up, rawC[, c(which(isCD4Tcell), which(isCD8Tcell))],
+                               notThese = rownames(v_T[v_T$aboveP<0,]) )
+mock_cd4_up <- comparableGenes(cd4_up, rawC[, c(which(isCD4Tcell), which(isCD8Tcell))],
+                               notThese = rownames(v_T[v_T$aboveP<0,]) )
+
+
+plot(sqrt(colSums( rawC[cd8_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+     sqrt(colSums(rawC[cd4_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+     pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+     col = c(rep("blue", sum(isCD4Tcell)), rep("red", sum(isCD8Tcell))),
+     main = "Orange: non-HVGs, same means",
+     xlab = "CD8 >> CD4",
+     ylab = "CD4 >> CD8")
+
+points(sqrt(colSums( rawC[mock_cd8_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+       sqrt(colSums( rawC[mock_cd4_up,    c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+       pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+       col = "orange")
+
+
+
+plot(rowMeans(normC[mock_cd4_up, isCD4Tcell]), rowMeans(normC[cd4_up, isCD8Tcell])); abline(0,1)
+# Even when filtering out the non-variable genes, we still get genes manifold higher
+# in CD4 than in CD8 - explaining why the orange dots' locations are so skewed / overlayed
+# with the CD4 cells!
+```
+
+I suppose we have to take random genes with similar means, but only from the
+uncorrelated genes.
+
+```{r}
+
+rawCountMatrix <- rawC[,   c(which(isCD4Tcell), which(isCD8Tcell))]
+genesA <- cd4_up
+genesB <- cd8_up
+
+
+cs <- colSums(rawCountMatrix)
+metaGene_A <- colSums(rawCountMatrix[genesA, ]) / cs
+metaGene_B <- colSums(rawCountMatrix[genesB, ]) / cs
+
+metaCors_A <- apply(t(rawCountMatrix) / cs, 2, function(gene) cor(metaGene_A, gene, method = "spearman"))
+metaCors_B <- apply(t(rawCountMatrix) / cs, 2, function(gene) cor(metaGene_B, gene, method = "spearman"))
+
+metaGene4 <-    colSums(rawC[cd4_up,   c(which(isCD4Tcell), which(isCD8Tcell))])
+metaGene4 <- metaGene4 / cs
+metaCors4 <- apply(t(rawC[! rownames(rawC) %in% cd4_up,   c(which(isCD4Tcell), which(isCD8Tcell))]) / cs,
+      2,
+      function(gene) cor(metaGene4, gene, method = "spearman"))
+
+corCutoff <- .002
+plot(colMeans(t(rawC[! rownames(rawC) %in% cd4_up,
+                     c(which(isCD4Tcell), which(isCD8Tcell))]) / cs),
+     metaCors4,
+     pch=20,
+     cex=.1,
+     log="x",
+     col = ifelse(abs(metaCors4) < corCutoff, "red", "black")
+     )
+# even at very stringent cutoff for correlations, we can still choose genes
+# from the entire range of means (red) reasonably well. Let's try.
+
+nonCorrelated <- names(colMeans(t(rawC[! rownames(rawC) %in% cd4_up,
+                      c(which(isCD4Tcell), which(isCD8Tcell))]) / cs)[which(abs(metaCors4) < corCutoff)])
+
+
+
+
+noncor_mock_4 <-comparableGenes(cd4_up, rawC[, c(which(isCD4Tcell), which(isCD8Tcell))],
+                notThese = rownames(rawC)[! rownames(rawC) %in% nonCorrelated] )
+noncor_mock_8 <-comparableGenes(cd8_up, rawC[, c(which(isCD4Tcell), which(isCD8Tcell))],
+                notThese = rownames(rawC)[! rownames(rawC) %in% nonCorrelated] )
+
+
+
+plot(sqrt(colSums( rawC[cd8_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+     sqrt(colSums(rawC[cd4_up,   c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+     pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+     col = c(rep("blue", sum(isCD4Tcell)), rep("red", sum(isCD8Tcell))),
+     xlab = "CD8 >> CD4",
+     ylab = "CD4 >> CD8",
+     asp = 1)
+
+points(sqrt(colSums( rawC[noncor_mock_8,   c(which(isCD4Tcell), which(isCD8Tcell))]^2 )),
+       sqrt(colSums( rawC[noncor_mock_4,    c(which(isCD4Tcell), which(isCD8Tcell))]^2) ),
+       pch = 20, cex = linMap(colSums(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]), .05, 1),
+       col = "orange")
+
+```
+
+
+
+
+
+
+
+
+# Metric for gene signatures
+
+Let's say we know between 10 and 500 genes important for a given cell type or
+condition (e.g. from bulk sequencing, literature markers, GO terms, etc.).
+What is the best way to summarize them in scRNAseq?
+I'll use markers discriminating CD4 and CD8 T cells here.
+
+## With Simon
+## Continue here
+## continue here
+## continue here
+```{r}
+library(MASS)
+
+normT_ids   <- c(which(isCD4Tcell), which(isCD8Tcell))
+normT_class <- c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)))
+
+# let's classify them with just a few excellent genes:
+fit4 <- lda(formula = Celltype ~ HUMAN_CD8B+ HUMAN_S100B +
+                                HUMAN_CD4 + HUMAN_GPR183 + HUMAN_GNG8,
+           # Celltype has to be last (dumb implementation design?)
+           data=data.frame(t(normC[, normT_ids]), Celltype = normT_class ),
+           CV = TRUE)
+plot(fit4$posterior) # note that the class posteriors are each other's inverses
+data.frame(TrueCT = normT_class, fit4$posterior) %>% ggplot(aes(TrueCT, CD8, col = TrueCT)) + geom_jitter()
+# this is already surprisingly good considering there's only 4 genes going into it!
+
+
+# now all genes.
+vmrT <- VMRstats(rawC[, normT_ids])
+
+# Crossvalidation runs into 'all-zeros problem' for lowly expressed genes,
+# so we also filter them:
+hvg_T <- rownames(vmrT[vmrT$aboveP > 1, ])
+
+tmp <- as.data.frame(apply(normC[hvg_T, normT_ids], 1, function(gene) {
+  gene + rnorm(n = length(gene), sd=1e-7)
+}) ) # cells are now in rows
+tmp$Celltype = normT_class
+
+
+ 77   81   86   88   92   96   98   99  104  109  114  117  122  138  152  153  
+ 165  170  184  193  204  207  212  215  216  217  222  228  232  236  239  246
+ 250  251  257  261  263  266  268  269  272  275  283  290  299  302  307  309 
+ 310  311  313  314  316  318  320  322  324  325  326  329  331  333  335  340  341  347  353  358  361  363  364  365  369  370  371  373  374  375  376  381  385  386  387  389  393  400  401  402  404  408  413  415  417  422  423  425  427  428  430  441  445  447  450  451  457  459  460  468  470  472  474  476  478  479  480  482  483  488  491  493  494  496  499  504  509  514  518  519  520  522  524  526  528  529  532  534  535  536  537  538  539  540  541  542  543  545  547  550  553  554  555  560  561  566  568  571  572  576  578  582  584  585  586  587  590  591  594  596  597  602  603  604  605  606  609  610  611  613  617  619  621  623  624  628  629  632  634  637  639  640  641  644  646  647  653  655
+fit <- lda(formula = Celltype ~ .,
+           data = tmp[, c(1:76, 2811)]
+          )
+
+fit <- lda(formula = Celltype ~ .,
+           # Celltype has to be last (dumb implementation design?)
+           data=data.frame(t(tmp[1:77, ]), Celltype = normT_class ),
+           # CV often runs into all-zero problem - dumb implementation design?!)
+           CV = TRUE)
+data.frame(TrueCT = normT_class, fit$posterior, predictedClass=fit$class) %>% ggplot(aes(TrueCT, CD8, col = TrueCT)) + geom_jitter()
+#  Questions:
+#
+#   why is exactly 1 cell's posterior estimate NA? For PCA-based below it's hundreds
+#
+
+
+
+
+
+
+
+# or perhaps pca:
+p <- prcomp(t(normC[rownames(vmrT[vmrT$aboveP > 1,]),
+                    normT_ids]))
+fitp <- lda(formula = Celltype ~ .,
+           # Celltype has to be last (dumb implementation design?)
+           data=data.frame(p$x[, 1:1000], Celltype = normT_class ),
+           CV = TRUE)
+data.frame(TrueCT = normT_class, fitp$posterior, predictedClass=fitp$class) %>% ggplot(aes(TrueCT, CD8, col = TrueCT)) + geom_jitter()
+nap <- is.na(fitp$posterior[,1])
+table(normT_class[!nap], fitp$class[!nap])
+# That looks awesome. Questions:
+#  Why does lda assign a class if the posterior value is NA?!
+#  see:   table(prediction=fit$class, normT_class)
+#  Why are some NA to begin with?! See    table(is.na(fit$posterior[,1]))
+#
+
+
+
+```
+
+
+
+
+## My own stuff
+
+```{r}
+sepScore1 <- apply(normC, 1, function(gene) {
+    sepsc <- mean(gene[isCD8Tcell]) - mean(gene[isCD4Tcell]) /
+               (sd(gene[isCD8Tcell]) + sd(gene[isCD4Tcell]))
+  
+})
+
+sepScore2 <- rowMeans(normC[, isCD8Tcell] - rowMeans(normC[, isCD4Tcell]))
+
+
+
+# candidate markers from using entire CITEseq dataset (250 CD8 vs 2768 CD4 T cells)
+ms_8 <-c( 
+  "HUMAN_CD8A", "HUMAN_CD8B", "HUMAN_S100B", "HUMAN_ZFP36L2",
+  "HUMAN_JUNB", "HUMAN_KLF6",  "HUMAN_CFL1", "HUMAN_SERPINF1", 
+  "HUMAN_PFN1", 
+  "HUMAN_DUSP2", "HUMAN_GUK1", "HUMAN_GAS5",    "HUMAN_PLAC8", 
+  "HUMAN_C6orf48",    "HUMAN_SRSF3",    "HUMAN_NELL2", "HUMAN_ZNF331", "HUMAN_NKG7", 
+  "HUMAN_GYPC", "HUMAN_C1orf63")
+ms_4 <- c(
+    "HUMAN_TXNIP",   "HUMAN_CORO1B", "HUMAN_GPR183", "HUMAN_ITM2A", 
+    "HUMAN_TOMM7",    "HUMAN_SOCS3",    "HUMAN_FXYD5",     "HUMAN_CD69",
+    "HUMAN_RNASET2",     "HUMAN_CD52",    "HUMAN_ANXA1",     "HUMAN_IL7R",
+    "HUMAN_LDHB",     "HUMAN_FTH1", "HUMAN_MARCKSL1",     "HUMAN_GZMA",
+    "HUMAN_CD37", "HUMAN_XBP1", "HUMAN_JUN", "HUMAN_RPL8", "HUMAN_CD4", 
+    "HUMAN_BCL11B"
+    )
+
+# manually pick best markers from heatmap:
+pheatmap(normC[ms_8,selecteven], cluster_rows = F, cluster_cols = F, gaps_col = sum(isCD8Tcell) , color = colPal2, show_colnames = F)
+
+
+m_8<- c(
+  "HUMAN_CD8A", "HUMAN_CD8B", "HUMAN_S100B",  "HUMAN_SERPINF1", "HUMAN_DUSP2", 
+  "HUMAN_GUK1", "HUMAN_NELL2")
+m_4<- c(
+  "HUMAN_TXNIP",   "HUMAN_CORO1B", "HUMAN_GPR183", 
+  "HUMAN_SOCS3",    "HUMAN_RNASET2", "HUMAN_IL7R",
+  "HUMAN_MARCKSL1",     "HUMAN_GZMA",
+   "HUMAN_CD4" )
+
+
+# Final markers:
+pheatmap(normC[c(m_4, m_8),selecteven], cluster_rows = F, cluster_cols = F,
+         gaps_col = 250 , gaps_row = length(m_4),scale = "row", color = colPal3, main = "Markers to discriminate CD8 and CD4 T cells (2x 250 cells shown)",
+         show_colnames = F)
+
+
+# Probably linear combinations will fail if you do not scale the values? Not sure...
+```
+Can PCA resolve these Cells?
+```{r}
+mp_noS <- data.frame(PC1=prcomp(t(normC[c(m_4, m_8), normT_ids]))$x[, 1],
+             ct=normT_class) %>%
+  ggplot(aes(ct, PC1, col=ct))+geom_jitter() + ggtitle("PCA on log1p(umi/totalUMI)\nNo Scaling")
+
+mp_S <- data.frame(PC1=prcomp(t(normC[c(m_4, m_8), normT_ids]), scale. = T)$x[, 1],
+             ct=normT_class) %>%
+  ggplot(aes(ct, PC1, col=ct))+geom_jitter() + ggtitle("PCA on log1p(umi/totalUMI)\nScaling")
+
+
+m <- CreateSeuratObject(rawC[, normT_ids])
+m <- NormalizeData(m)
+m <- FindVariableGenes(m)
+m <- ScaleData(m, genes.use = c(m_4, m_8), vars.to.regress = "nUMI")
+m <- RunPCA(m, pc.genes = c(m_4, m_8), pcs.compute = 7, do.print = F)
+seu <- data.frame(PC1=m@dr$pca@cell.embeddings[,1], ct=normT_class) %>%
+  ggplot(aes(ct, PC1, col=ct))+geom_jitter() + ggtitle("Regress nUMI with Seurat")
+
+cowplot::plot_grid(mp_noS, mp_S, seu, ncol = 3)
+```
+
+I observe that PCA on a few selected genes can be highly effective, but only
+with scaling.
+
+
+Can we sum up gene counts and get nice results?
+
+```{r}
+rawC[m_4, normT_ids]
+#    ...
+#    ...
+#    ...
+#    ...
+```
+
+
+Could the ME algorithm divide each gene into two expression groups, which
+we could then use somehow to compute cell-cell distances?
+
+```{r}
+
+data.frame(index=normT_ids, ct=normT_class, t(normC[m_4, normT_ids]) / colSums(rawC[, normT_ids])) %>%
+  gather(key = "Gene", "Expression", -index, -ct) %>% 
+ ggplot() + geom_histogram(aes(Expression, fill = ct), position = "dodge") +facet_wrap(~Gene)
+ggplot(aes(ct, Expression, col = ct)) + geom_violin() + facet_wrap(~Gene, scales = "free_y") + geom_jitter(size=.4)
+
+# with equal groups (even equal library sizes):
+data.frame(index=selecteven, ct=ct, t(normC[m_4, selecteven]) / colSums(rawC[, selecteven])) %>%
+  gather(key = "Gene", "Expression", -index, -ct) %>% 
+ggplot(aes(ct, Expression, col = ct)) + geom_violin() + facet_wrap(~Gene, scales = "free_y") + geom_jitter(size=.4)
+
+data.frame(index=selecteven, ct=ct, t(normC[m_8, selecteven]) / colSums(rawC[, selecteven])) %>%
+    gather(key = "Gene", "Expression", -index, -ct) %>% 
+    ggplot() + geom_histogram(aes(Expression, fill = ct), position = "dodge") +facet_wrap(~Gene)
+
+```
+
+
+
+
+
+
+
+## unfinished section, not sure if important
+PCA on all genes:
+```{r}
+# even libsizes:
+  pc_even  <- prcomp( t(normC[, selecteven]))
+  # get this function from script 'poisson_simulations.R':
+  ct_boxplot(cellInfo = factor(ct, levels = unique(ct)),
+             pca =  pc_even)
+  plot(pc_even$x[,2:3], col = factor(ct, levels=unique(ct)))
+  #    almost perfect separation, very nice.
+  plot(colSums(rawC[, selecteven]), 
+       pc_even$x[, 2], pch=20, cex=.4, col = factor(ct, levels = c("CD4", "CD8")))
+  
+  
+  
+
+# realistic (uneven) libsizes:
+  pc_few <- prcomp( t(normC[, selectFew]))
+  # get this function from script 'poisson_simulations.R':
+  ct_boxplot(cellInfo = factor(ct, levels = unique(ct)),
+             pca =  pc_few)
+  cs_few <- colSums(rawC[, selectFew])
+  plot(colSums(rawC[, selectFew]), 
+       pc_few$x[, 1], pch=20, cex=.4, col = factor(ct, levels = c("CD4", "CD8")))
+  
+  
+  
+# on all cells:
+  pc_all <- irlba::irlba(t(normC), nv =25)
+  
+  ct_citeseq <- ifelse(isCD4Tcell, "CD4", "other") # levels: CD4 & other
+  ct_citeseq <- ifelse(isCD8Tcell, "CD8", ct_citeseq) # levels: CD4 & other
+  ct_citeseq <- factor(ct_citeseq, levels = c("CD4", "CD8", "other"))
+
+  par(mfrow = c(2,3))
+  sapply(1:6, function(PC) {
+    scores <- pc_all$u[, PC]
+    plot(ct_citeseq, scores, main = PC)
+  })
+  
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# Playzone
+
+
+
+
+## [9th January]: T statistic as readout
+
+Compute distances with Seurat:
+```{r}
+library(Seurat)
+s <- CreateSeuratObject(rawC[, c(which(isCD4Tcell), which(isCD8Tcell))])
+s <- NormalizeData(s, display.progress = F)
+s <- FindVariableGenes(s, do.plot = F, display.progress = F)
+s <- ScaleData(s, genes.use = s@var.genes, vars.to.regress = "nUMI", display.progress = F)
+s <- RunPCA(s, pc.genes = s@var.genes, do.print = F)
+ds <- as.matrix(dist( s@dr$pca@cell.embeddings[, 1:10] ))
+```
+
+Alternatively, compute distances by hand:
+```{r}
+normRandom <- log1p( t(rawC[, selectFew]) / colSums(rawC[, selectFew]) )
+vFew <- VMRstats(rawC[, selectFew])
+p_few <-  prcomp(normRandom[, rownames(vFew[vFew$aboveP > 2, ])], scale. = FALSE)
+ds <- as.matrix(dist( p_few$x[, 1:10]  ))
+```
+
+Use t-test on distances to see how close/far each cell is to CD4s/CD8s:
+```{r}
+res <- t(sapply(1:nrow(ds), function(i){
+  x <- ds[i, 1:250]
+  y <- ds[i, 251:500]
+  if(i <= 250) {
+                x <- x[-i] }else{
+                y <- y[-(i-250)] }
+  res <- t.test(x = x, y=y, var.equal = F) 
+  return(c(tstat=res$statistic, p=res$p.value))
+})); colnames(res) <- c("tstat", "p")
+
+
+plotDF <- data.frame(#s@dr$tsne@cell.embeddings,
+           ct=ct,
+           libsize = colSums(rawC[, selectFew]),
+           res,
+           FDR = p.adjust(res[, "p"], "BH"))
+
+```
+
+
+```{r}
+ggplot(plotDF, aes(ct, tstat, col = ct)) + geom_jitter(aes(alpha = FDR < .05))
+```
+
+
+
+## [old] Supervised UMAP (with labels)
+Only exists in python implementation so far, but here I play around with Simon
+on 9th january.
+You can delete this section soon.
+
+```{r}
+library(umap)
+
+# To create a custom configuration, create a copy of the defaults and then update any of the fields. For example, let’s change the seed for random number generation.
+custom.config = umap.defaults
+custom.config$random_state = 123
+# Another way to customize the algorithm is to specify the non-default parameters explicitly. To achieve equivalent results to the above, we can thus use
+iris.umap.3 = umap(iris.data, random_state=123)
+
+
+# to use python package umap-learn rather than R-implementation:
+iris.umap.4 = umap(iris.data, method="umap-learn")
+
+
+help(umap.defaults)
+```
+
+
+
+```{r}
+rawT <- rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]
+normT <- t(log1p( t(rawT) / colSums(rawT) ))
+
+
+# "gold standard cells":
+gold4 <- which(rawT["HUMAN_CD4", ] > 0 & rawT["HUMAN_CD8B", ] == 0)
+gold8 <- which(rawT["HUMAN_CD4", ] == 0 & rawT["HUMAN_CD8B", ] > 0)
+plot(jitter(t(rawT[c("HUMAN_CD4", "HUMAN_CD8B"), ]), factor = 1), pch = 20, cex=.4,
+     col = 1 + 1 * (1:ncol(rawT) %in% gold4) + 2 * (1:ncol(rawT) %in% gold8))
+
+# umap on goldstandard cells:
+u <- umap( t(normT[, c(gold4, gold8)]))
+plot(u$layout, col = c(rep(2, length(gold4)), rep(3, length(gold8))))
+
+u2 <- predict(u, t(normT))
+plot(u2, col = c(rep(2, sum(isCD4Tcell)), rep(3, sum(isCD8Tcell))), asp = 1,
+     pch = 20, cex=.4)
+
+
+```
+
+
+
+
+
+
+
+
+
+# ML on PCs
+
+
+## ...Amongst T cells: CD4 and CD8
+```{r}
+library(umap)
+library(glmnet)
+rawT  <- rawC[, c(which(isCD4Tcell), which(isCD8Tcell))]
+vT    <- VMRstats(rawT)
+normT <- log1p( t(rawT) / colSums(rawT) )
+pT    <- prcomp(normT[, rownames(vT[vT$aboveP > 2,])], scale. = TRUE)
+uT    <- umap(pT$x[, 1:10])
+data.frame(uT$layout, ct=c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell)))) %>%
+  ggplot(aes(X1, X2, col=ct)) + geom_point()
+
+
+
+# "gold standard cells":
+gold4 <- which(rawT["HUMAN_CD4", ] > 0 & rawT["HUMAN_CD8B", ] == 0)
+gold8 <- which(rawT["HUMAN_CD4", ] == 0 & rawT["HUMAN_CD8B", ] > 0)
+plot(jitter(t(rawT[c("HUMAN_CD4", "HUMAN_CD8B"), ]), factor = 1), pch = 20, cex=.4,
+     col = 1 + 1 * (1:ncol(rawT) %in% gold4) + 2 * (1:ncol(rawT) %in% gold8))
+# train on goldstandard cells:
+goldTrain <-cv.glmnet(x = pT$x[c(gold4, gold8), ],
+          y = factor(c(
+            rep("CD4", length(gold4)),
+            rep("CD8", length(gold8))),
+            levels = c("CD4", "CD8")    ),
+          family = "binomial",
+          alpha = 1
+          )
+
+# check out training results
+plot(coef(goldTrain, s = "lambda.1se"), xlab = "PC", ylab="Regression coefficient")
+
+
+# predict all
+goldTest <- predict(goldTrain, newx = pT$x[, ], s = "lambda.1se", type = "response")
+
+
+
+plot(goldTest, cex=.4, pch=20,
+     col = 1 + (1:nrow(goldTest) %in% gold4 + 2 *(1:nrow(goldTest) %in% gold8)));abline(v=sum(isCD4Tcell))
+
+data.frame(uT$layout,
+           ct=c( rep("CD4", sum(isCD4Tcell)), rep("CD8", sum(isCD8Tcell))),
+           response = goldTest[,1]) %>%
+  ggplot(aes(X1, X2, col= response)) + geom_point() + scale_color_gradient2(midpoint = .5)
+
+```
+
+
+## ...Entire CITEseq data
+
+```{r}
+library(tidyverse)
+library(irlba)
+library(glmnet)
+library(umap)
+
+v <- VMRstats(rawC)
+
+normC <- log1p(t( t(rawC)  / colSums(rawC)))
+i <- irlba::prcomp_irlba(
+  scale(t(normC[rownames(v[v$aboveP > 2,]),])), n = 100)
+
+# UMAP:
+u <- umap(i$x[, 1:30])
+plot(u$layout, col = 1 + 1*(isTcell)+2*(isBcell) + 2*(isCD8Tcell), pch=20, cex=.4, asp=1)
+
+plot(jitter(rawC["HUMAN_CD3E", ]), jitter(rawC["HUMAN_CD79B",]), pch=20, cex=.4)
+goldT <- which(rawC["HUMAN_CD3E", ] > 0)
+goldB <- which(rawC["HUMAN_CD79B", ] > 0)
+goldM <- c(which(rawC["HUMAN_CD14", ] > 0),
+           which(rawC["HUMAN_FCGR3A", ] > 0  & rawC["HUMAN_NCAM1", ] == 0 ))
+
+idxA<- goldM
+idxB<- setdiff(1:ncol(rawC), idxA)
+# train on goldstandard cells:
+goldTrain <-cv.glmnet(x = i$x[c(idxA, idxB), ],
+          y = factor(c(
+            rep("A", length(idxA)),
+            rep("B", length(idxB))),
+            levels = c("A", "B")    ),
+          family = "binomial",
+          alpha = 1
+          )
+# predict all
+goldTest <- predict(goldTrain, newx = i$x, s = "lambda.1se", type = "response")
+
+ggplot(data.frame(u$layout,
+                  response = goldTest[,1],
+                  Gene = normC["HUMAN_NCAM1",]),)+
+  geom_point(aes(X1, X2, col = response), size =1)+
+  coord_fixed()+
+  scale_color_gradient2(midpoint = .5)   
+```
+
+```{r}
+legend <- get_legend(p_T+ theme(legend.direction = "vertical"))
+plot_grid(p_T + guides(color=F)+xlab(NULL)+ylab(NULL),
+          p_B + guides(color=F)+xlab(NULL)+ylab(NULL),
+          p_M + guides(color=F)+xlab(NULL)+ylab(NULL),
+          p_M2 + guides(color=F)+xlab(NULL)+ylab(NULL),
+          legend,
+          ncol=2,
+          rel_heights = c(4,4,1)
+          )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
