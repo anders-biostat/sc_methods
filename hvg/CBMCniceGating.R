@@ -491,6 +491,31 @@ library(RColorBrewer)
 
 
 
+# playground with simon: Eucl Dists --------------------------------------------------------------
+
+
+rownames(pca$x) <- colnames(normC)
+
+tibble(cell1 = sample(colnames(normC), 1000),
+         cell2 = sample(colnames(normC), 1000),
+         ) %>%
+  rowwise() %>% mutate(dist=sqrt(sum( (normC[, cell1] - normC[, cell2])^2)),
+                       dist2=sqrt(sum( (pca$x[cell1, 1:50] - pca$x[cell2,1:50])^2))) %>%
+ #ungroup()%>% summarise(cor(dist, dist2, method = "spear")) 
+  ggplot + geom_point(aes(dist, dist2)) + scale_x_log10() + scale_y_log10()+
+  geom_abline(intercept=0, slope=1)
+# We see that running PCA only speeds up computation, it does not change
+# the distances.
+# everything below .5 are cells within a cluster, everything above is
+# between clusters, as demonstrated here by sleepwalk:
+library(sleepwalk)
+sleepwalk(cbmc@dr$tsne@cell.embeddings,
+          pca$x, .1)
+
+
+
+
+
 # Confirm B/T doublets ----------------------------------------------------
 
 
@@ -562,8 +587,13 @@ DimPlot(cbmc, reduction.use = "umap")
   
   
 
-# multinomial playground -------------------------------------------------------------
+# Multinomial regression (ElasticNet) -------------------------------------------------------------
 
+  
+
+# ...Classify major celltypes ------------------------------------------------
+
+  
 
 # We envision a workflow where the researcher selects cells based on marker genes
 # and informed by UMAP/tSNE. The below method is as simple as it gets:
@@ -573,7 +603,7 @@ trainIDs <- list(
   T = tids("CD3E", 300),
   B = tids("CD79B", 150),
   M14 = tids("CD14", 200),
-  CD16 = tids("FCGR3A", 100),
+  M16 = tids("MS4A7", 40),  # marker from Seurat's pbmc3k_tutorial
   NK = tids("NCAM1", 40),
   E =tids("HBB", 50),
   HSC = tids("CD34", 20),
@@ -588,31 +618,168 @@ IDsForLabels <- unlist(trainIDs)
 
 table(Truth=groundtruth_vector[IDsForLabels], Train=Labels)
 # Amazing how many we get right with very simple means of marker expression!
-# Only CD16 does not work, and we'll notice this below.
+# Note that CD16 monocytes (M16) can't be selected with tids("FCGR3A"), as this
+# selects too many NK cells as well, and then the scores for NK cells and CD16
+# cells are competing for the same cells (thus both stay low).
 
 # train model:
 cv<-cv.glmnet(x = pca$x[IDsForLabels, ],
           y = Labels,
           family = "multinomial",
           alpha = .5)
+plot(cv); log(cv$lambda.1se)
+# to do:
+#    play with weights: by inverse celltype frequency, by important celltypes, ...
+#    do proper CV (e.g. 100 interations of resampling 80:20 train:test)
 
-
-
-
-
-
-# Score jitters
-
+# predict celltype:
 pred <- as.data.frame(
           predict(cv,
                   pca$x,
                   type ="response")[,,1]
   )
-p <- ggplot(data.frame(Groundtruth = groundtruth_vector, pred)) + 
-     theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-     ggplotScale_groundtruth
-p + geom_jitter(aes(Groundtruth, T, col=Groundtruth), width = .3)
-#
+
+
+# Illustrate results:
+data.frame(pred, CITEtruth = groundtruth_vector, DataType = ifelse(1:nrow(pred) %in% IDsForLabels, "Training_Data","Unlabelled_Data")) %>%
+  gather(key=Score, value="Probability", B:T) %>%
+  ggplot()+geom_jitter(aes(Score, Probability, col=CITEtruth),
+                       alpha = .4,
+                       size = 2) +
+  facet_wrap(~ DataType, nrow=2) +
+  ggplotScale_groundtruth
+
+# decide class:
+pred.7 <-   apply(pred, 1, function(row) {ifelse(max(row) > .7, 
+                                          colnames(pred)[which.max(row)],
+                                          NA)})
+# confusion matrix:
+table(CITEtruth = groundtruth_vector,
+      Predicted = pred.7,
+  useNA = "always"
+)
+
+
+data.frame(Urna$layout, PredictedClass = pred.7) %>%
+  ggplot() + geom_point(aes(X1, X2, col = PredictedClass), alpha = .5)
+
+
+
+
+
+
+# ...Pitfalls ----------------------------------------------------------------
+
+
+
+# To illustrate what happens when the celltype markers we pick are poor on the
+# mRNA level, let's use CD16 as marker for CD16 monocytes (non-classical Monos).
+# CD16 is officially called FCGR3A and also expressed on NK
+# cells (https://www.ncbi.nlm.nih.gov/pubmed/23487023), so the following will
+# select a mix of CD16 monocytes and NK cells as M16 training data:
+CD16 = tids("FCGR3A", 100)
+# above we did this: M16 = tids("MS4A7", 40)  # marker from Seurat's pbmc3k_tutorial
+
+# Now once we repeat all above steps, we'll see that 
+# NK and CD16 scores are competing for the same class of cells
+# and thus never reach high scores:
+gather(pred, key = Class, value = Probability) %>% ggplot()+geom_jitter(aes(Class, Probability, col=Class))
+gather(pred[IDsForLabels,], key = Class, value = Probability) %>% ggplot()+
+  geom_jitter(aes(Class, Probability, col=Class)) + ggtitle("Scores overview")
+
+
+
+# This becomes obvious when plotting our scores around a bit, even when we
+# rely only on information typically available to a user (i.e. without knowing the 
+# groundtruth):
+userDF <- data.frame(pred[IDsForLabels,], ClassInTraining=Labels)
+# 1. there's 3 classes where the scores never reach 1.0: HSC, NK and CD16.
+gather(userDF, Score, Probability, -ClassInTraining) %>%
+  ggplot()+geom_jitter(aes(Score, Probability, col=ClassInTraining)) 
+#  
+filter(userDF, ClassInTraining %in% c("M16", "NK")) %>%
+  ggplot()+geom_point(aes(M16, NK, col=ClassInTraining))
+
+
+
+
+
+
+# ...Overlapping scores -----------------------------------------------------------------
+# can we detect them automatically?
+
+
+
+trainScores <- function(class1="B", class2="T"){
+  data.frame(userDF[ userDF$ClassInTraining %in% c(class1, class2), c(class1, class2)])
+}
+
+# look at all scores at once:
+par(mfrow = c(5,6))
+apply(combn(colnames(userDF)[1:ncol(userDF)-1], 2), 2, function(x)
+plot(trainScores(x[1], x[2]),pch=20, asp=1))
+par(mfrow = c(1,1))
+  
+
+# can we discriminate redundant groups (NK-CD16) from
+# unique groups (T and B?)? Let's try this:
+# plot one score against the distance to the origin:
+par(mfrow=c(1,3))
+plot(trainScores("NK", "CD16"), asp=1)
+plot(trainScores("NK", "T"), asp=1)
+plot(trainScores("B", "T"), asp=1)
+
+uniquePairs <- combn(colnames(userDF)[1:ncol(userDF)-1], 2)
+
+
+simScore <- function(class1="B", class2="T") mean(apply(trainScores(class1, class2), 1, min))
+
+
+pheatmap(crossing(rowname=x, x2=x) %>% rowwise() %>% mutate(core = simScore(rowname, x2)) %>% spread(x2, core) %>% as.data.frame %>% column_to_rownames())
+
+
+sapply(x, function(class1) {
+  sapply(x, function(class2) simScore(class1, class2))
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ...Other benchmarking plots ------------------------------------------------
+
+
+
+
+
+# tSNE with classifications:
+data.frame(plotDF(cbmc), predict90=
+     apply(pred[, colnames(pred)!="Truth"],
+           1,
+           function(x) {
+             x <- x > .9
+             ifelse(length(which(x))==0, NA, colnames(pred)[which(x)])
+           } )
+     ) %>%
+  ggplot()+geom_point(aes(tSNE_1, tSNE_2, col = predict90), alpha = .4)
+
+
+
+
+
+
+
+
 
 
 
@@ -744,10 +911,151 @@ pheatmap(t(apply(res,1,function(x) {round(100*x/sum(x), 1)}))  ,
 
 # Downsample, CD8/CD4 T cells, ... ----------------------------------------
 
+# keep 25 % of cells:
+fewCells <- sample(c(FALSE, FALSE, TRUE), size = ncol(rawC), replace=TRUE)
 
+T_ids <- c(which(T4 & fewCells), which(T8 & fewCells), which(doublet_T48 & fewCells))
 
 
 # downsample:
-rawC <- matrix(rbinom(rawC, rawC, .8), ncol=ncol(rawC),
-               dimnames = list(rownames(rawC), colnames(rawC)))
+rawT <- matrix(rbinom(rawC[, T_ids], rawC[, T_ids], .5), ncol=ncol(rawC[, T_ids]),
+               dimnames = list(rownames(rawC[, T_ids]), colnames(rawC[, T_ids])))
+
+
+
+Tseurat <- CreateSeuratObject(raw.data = rawT)
+Tseurat <- MakeSparse(Tseurat)
+Tseurat <- NormalizeData(Tseurat, display.progress = FALSE)
+Tseurat <- FindVariableGenes(Tseurat, do.plot = TRUE, y.cutoff = 0.5)
+length(Tseurat@var.genes)
+Tseurat <- ScaleData(Tseurat, display.progress = T)
+Tseurat <- RunPCA(Tseurat, pcs.print = 0, do.print=FALSE, pcs.compute = 200)
+Tseurat <- RunTSNE(Tseurat, dims.use = 1:20)
+Tseurat <- RunUMAP(Tseurat, pcs.print = 0, do.print=FALSE,
+                   dims.use = 1:20)
+Tseurat <- FindClusters(Tseurat, dims.use = 1:20)
+Tdf <- data.frame(
+  Tseurat@dr$tsne@cell.embeddings,
+  Tseurat@dr$umap@cell.embeddings,
+  Tseurat@meta.data,
+  TrueClass=droplevels(groundtruth_vector[T_ids]) )
+
+ggplot(Tdf, aes(tSNE_1, tSNE_2, col=TrueClass))+geom_point() + ggplotScale_groundtruth
+
+# Seurat get's clusters pretty wrong (CD4 T cells divide 50:50 into the two)
+table(Cl=Tdf$res.0.8, T=Tdf$TrueClass)
+
+
+
+
+
+
+
+
+normT <- log1p(t(rawT) / colSums(rawT))
+T_tids <- function(gene, n = 20){
+  # top IDs: from the cells expressing this gene at all, get the indices of the n highest.
+  expr <- normT[, paste0("HUMAN_", gene)] 
+  expressors <- sum(expr > 0)
+  if(n > expressors){warning(paste0("Max n reached; there are only ",
+                                    expressors,
+                                    " cells expressing ", gene))
+    n <- expressors}
+  order(expr, decreasing = T)[1:n]
+}
+
+TS <- function(ids){
+  plot(Tdf$tSNE_1, Tdf$tSNE_2, pch=20, col=adjustcolor(1, alpha.f = .3))
+  points(Tdf$tSNE_1[ids], Tdf$tSNE_2[ids], pch=20, col="red")
+}
+
+
+# CV with cv.glmnet (doesn't stabilize so well):
+train4 <- T_tids("CD4", 50)
+train8 <- T_tids("CD8A", 30) # CD8A is more selective than CD8B (knowing this is cheating)
+cvT <- cv.glmnet(Tseurat@dr$pca@cell.embeddings[c(train4, train8),],
+                 y =       c(rep("CD4", length(train4)),
+                             rep("CD8", length(train8))),
+                 weights = c(rep(1/length(train4), length(train4)),
+                             rep(1/length(train8), length(train8))),
+                 family = "binomial",
+                 alpha = 1)
+plot(cvT); cvT$lambda.1se; log(cvT$lambda.1se)
+                 
+predT <- predict(cvT,
+                 Tseurat@dr$pca@cell.embeddings,
+                 type = "response")            
+data.frame(pred=predT[,1], Truth = droplevels(groundtruth_vector[T_ids])) %>%
+  ggplot()+geom_jitter(aes(Truth, pred))
+
+
+
+
+
+
+
+
+# ...manual CrossValidation ---------------------------------------------------------------
+
+
+# custom CV:
+
+labelled_A <- T_tids("CD4", 50)
+labelled_B <- T_tids("CD8A", 30) # CD8A is more selective than CD8B (knowing this is cheating)
+
+
+# custom stuff (create suitable function API later):
+pcMat <- Tseurat@dr$pca@cell.embeddings # rows ~ cells, cols ~ Features (PCs)
+label_A  <- "CD4"
+label_B  <- "CD8"
+
+
+
+# select 80:20 train:test data for CV:
+cvtrain_A <- sample(labelled_A, size = floor(.8 * length(labelled_A)))
+cvtest_A <-  labelled_A[ ! labelled_A %in% cvtrain_A]
+cvtrain_B <- sample(labelled_B, size = floor(.8 * length(labelled_B)))
+cvtest_B <-  labelled_B[ ! labelled_B %in% cvtrain_B]
+
+
+
+# let glmnet pick the lambdas for CV:
+lambdas <- glmnet(pcMat[c(labelled_A, labelled_B),],
+              y = c(rep(label_A, length(labelled_A)),
+                    rep(label_B, length(labelled_B))),
+              family = "binomial",
+              alpha = 1)$lambda
+
+# start CV:
+ 
+
+
+fit <- glmnet(pcMat[c(cvtest_A, cvtest_B),],
+              y = c(rep(label_A, length(cvtest_A)),
+                    rep(label_B, length(cvtest_B))),
+              lambda = lambdas,
+              family = "binomial",
+              alpha = 1)
+
+
+
+
+
+
+
+# why does irlba not work well? Try again later with HVG selection:
+T_pc <- irlba::prcomp_irlba(log1p(t(rawC[, T_ids]) / colSums(rawC[, T_ids])),
+                     n = 50)$x
+data.frame(T_pc,
+           Truth = droplevels(groundtruth_vector[T_ids])) %>%
+  ggplot()+geom_point(aes(PC1, PC2, col = Truth))
+
+
+
+
+
+
+
+
+
 
