@@ -90,14 +90,24 @@ umap_prcomp <- uwot::umap(pcs_prcomp,
 
 
 
+# select gene to fit:
+gene <- "Cdkn1c"
+# precomputations (outside loop, otherwise slow):
+ds <- as.matrix(dist( pcs_prcomp[, 1:15] )) # cell-cell distances
+y <- counts[gene, ]
+cs <- colSums(counts)
+x  <- pcs_prcomp[, 1:15]
+
+
+
+
+
 
 
 
 # locfit package usage-----------------------------------------------------------
 
 
-# select gene to fit:
-gene <- "Cdkn1c"
 
 # using locfit package:
 gene_locfit <- locfit.raw( x = do.call(lp, c(as.list(as.data.frame(pcs_prcomp[, 1:15])),
@@ -165,11 +175,6 @@ hw1 <- 2; cat("runif var:  ", sd( rtricube(1000, hw1) )^2); cat("\ntheor. var:  
 
 
 
-# precomputations (outside loop, otherwise slow):
-ds <- as.matrix(dist( pcs_prcomp[, 1:15] )) # cell-cell distances
-y <- counts[gene, ]
-cs <- colSums(counts)
-x  <- pcs_prcomp[, 1:15]
 
 
 
@@ -280,7 +285,7 @@ gene_loc_nn.7 <- locfit.raw( x = do.call(lp, c(as.list(as.data.frame(pcs_prcomp[
                           ev = dat() # no extrapolation between cells
 )
 
-
+# compute manually:
 man.1 <- sapply(1:ncol(counts), function(i) {
   pos_distances <- ds[i, ]
   hw_fit <- uniroot(
