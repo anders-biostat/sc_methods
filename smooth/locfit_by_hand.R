@@ -329,3 +329,160 @@ plot(unname(man.1), fitted.values(gene_loc_nn.1), asp=1, pch=20);abline(0,1)
 
 
 
+
+
+
+
+
+# number of PCs -----------------------------------------------------------
+# Locfit package can NOT take more than 15 covariates and then throws a bug.
+# Code provoking the bug:
+
+#  15 is fine, 16 gives error:
+locfit.raw( x = do.call(lp, c(as.list(as.data.frame(replicate(15, rnorm(100)))),
+                              h = 5,
+                              deg=1)),
+            y = rnorm(100),
+            ev=dat()
+)
+# Simon looked it up in locfit's source code, it probably is a bug:
+# maxdim is a hard-coded constant set to 15, and throughout the code
+# sometimes the constant is used, and sometimes a hard-coded 15.
+
+
+
+
+
+
+# The manual implementation obviously compiles without errors:
+x.16 <- pcs_prcomp[, 1:16]
+pcs16 <- sapply(1:ncol(counts),function(i) { 
+  pos_distances <- ds[i, ]
+  fit <- glm(
+    y ~ x.16,
+    weights = tricube(pos_distances, halfwidth = .2),
+    family = poisson("log"),
+    offset = log( cs ) )
+  return( fitted.values(fit)[i] )
+})
+# warnings:
+#  32: glm.fit: algorithm stopped at boundary value
+#  33: glm.fit: fitted rates numerically 0 occurred
+#  34: step size truncated due to divergence
+
+
+
+
+
+
+
+
+
+
+# speed benchmark ---------------------------------------------------------------------
+ncells_halfwidth <- 50
+
+
+glmfit_subsetting <- function() { 
+  sapply(cell_ids,function(i) { 
+    pos_distances <- ds[i, ]
+    hw_fit <- uniroot(
+      f = function(root) { 
+        # one_sd <- sqrt(35/243) * root
+        sum( pos_distances < root) - ncells_halfwidth},
+      interval = c(1e-5, 20))
+    weights <- tricube(pos_distances, halfwidth = hw_fit$root)
+    nzw     <- weights != 0
+    fit <- glm.fit(
+      x[nzw,], y[nzw],
+      weights = weights[nzw],
+      family = poisson("log"),
+      offset = log( cs[nzw] ) )
+    return( fitted.values(fit)[i] )
+    })
+}
+glmfit_no_subsetting <- function() { 
+  sapply(cell_ids,function(i) { 
+    pos_distances <- ds[i, ]
+    hw_fit <- uniroot(
+      f = function(root) { 
+        # one_sd <- sqrt(35/243) * root
+        sum( pos_distances < root) - ncells_halfwidth},
+      interval = c(1e-5, 20))
+    fit <- glm.fit(
+      x, y,
+      weights = tricube(pos_distances, halfwidth = hw_fit$root),
+      family = poisson("log"),
+      offset = log( cs ) )
+    return( fitted.values(fit)[i] )
+    })
+}
+
+glm_ <- function() {
+  sapply(cell_ids,function(i) { 
+  pos_distances <- ds[i, ]
+  hw_fit <- uniroot(
+    f = function(root) { 
+      # one_sd <- sqrt(35/243) * root
+      sum( pos_distances < root) - ncells_halfwidth},
+    interval = c(1e-5, 20))
+  fit <- glm(
+    y ~ x,
+    weights = tricube(pos_distances, halfwidth = hw_fit$root),
+    family = poisson("log"),
+    offset = log( cs ) )
+  return( fitted.values(fit)[i] )
+  })
+}
+
+
+cell_ids <- sample(1:ncol(counts), 10)
+bm <- microbenchmark::microbenchmark(
+glm_(),
+glmfit_no_subsetting(),
+glmfit_subsetting()
+)
+
+cell_ids <- sample(1:ncol(counts), 10)
+bm2 <- microbenchmark::microbenchmark(
+glm_(),
+glmfit_no_subsetting(),
+glmfit_subsetting()
+)
+
+cell_ids <- sample(1:ncol(counts), 10)
+bm3 <- microbenchmark::microbenchmark(
+glm_(),
+glmfit_no_subsetting(),
+glmfit_subsetting()
+)
+
+
+
+
+
+
+cell_ids <- 1:ncol(counts)
+glmfit_subsetting()
+
+locfit_package <- function() {
+  
+  locfit.raw( x = do.call(lp, c(as.list(as.data.frame(pcs_prcomp[, 1:15])),
+                              nn = ncells_halfwidth / ncol(counts),
+                              deg=1)),
+            y = counts[gene, ],
+            family = "poisson",
+            link = "log",
+            maxit = 50,
+            base = log(colSums(counts)), # take totalUMIs into account
+            ev = dat() # no extrapolation between cells
+)
+}
+
+
+microbenchmark::microbenchmark(
+  glmfit_subsetting(),
+  locfit_package(),
+  times = 10
+)
+
