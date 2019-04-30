@@ -101,6 +101,18 @@ x  <- pcs_prcomp[, 1:15]
 
 
 
+# savepoint ---------------------------------------------------------------
+
+# save.image(paste0("/home/felix/PhDother/scAnalysis/sc_methods/smooth/",
+#                   "savepoint/",
+#                   "locfit_by_hand_workspace.RData"))
+load(paste0("/home/felix/PhDother/scAnalysis/sc_methods/smooth/",
+                  "savepoint/",
+                  "locfit_by_hand_workspace.RData"))
+library( tidyverse )
+library( Matrix )
+library( locfit )
+library( uwot )
 
 
 
