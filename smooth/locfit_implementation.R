@@ -1,0 +1,168 @@
+library(statmod)
+library( locfit )
+library( Matrix )
+
+# Locfit by hand ----------------------------------------------------------
+
+
+tricube <- function(x, halfwidth=1) {
+  # tricube kernel function. All values outside c(-halfwidth, halfwidth) are 0,
+  # integral is 1, variance is
+  #     var(tricube) = 35/243 * halfwidth^2
+  #
+  # formula adapted from (wikipedia)[https://en.wikipedia.org/wiki/Kernel_(statistics)],
+  # and expanded to contain `halfwidth`.
+  tricube <- 70/81/halfwidth * (1 - abs(x/halfwidth)^3)^3
+  # outside of kernel support (-halfwidth, +halfwidth), tricube is defined as 0:
+  tricube[ abs(x) > halfwidth ] <- 0
+  return(tricube)
+}
+
+
+manloc_smooth <- function(umis, totalUMI, featureMatrix, 
+                          nn=NULL, h=NULL, leave_one_out=FALSE){ 
+  # umis: raw umis for gene of interest. This should be an integer vector with 1
+  #       element for each cell.
+  # totalUMIs: totalUMIs of each cell (the colSums of gene-by-cell countmatrix)
+  # featureMatrix: cells in rows, features in cols - typically first n PCs
+  # nn: number of nearest neighbors (integer)
+  ds <- as.matrix(dist( featureMatrix ))
+
+  fit_statmod <- do.call(rbind, lapply(1:length(umis), function(i){ 
+    pos_distances <- ds[i, ]
+   
+   # compute weights for local regression - depending on how nn and/or h are set: 
+   if(!is.null(nn)){ 
+    hw_fit <- uniroot(
+      f = function(root) { 
+        # one_sd <- sqrt(35/243) * root
+        sum( pos_distances < root) - nn},
+      interval = c(1e-5, 20))}
+    # weights for local regression:
+    if(is.null(h)&!is.null(nn))  w <- tricube(pos_distances, halfwidth = hw_fit$root)
+    if(!is.null(h)&is.null(nn))  w <- tricube(pos_distances, halfwidth = h)
+    
+    # leave-1-out crossvalidation:
+    if( leave_one_out ) { w[i] <- 0}
+    
+    weighted_mean =  sum(umis*w/totalUMI) / sum(w) 
+    
+    fit_results <- tryCatch(
+       {
+        fit <- statmod::glmnb.fit(
+          X = model.matrix(~featureMatrix[w>0,]),
+          y = umis[w>0],
+          dispersion = 0, # poisson regression
+          weights = w[w>0],
+          offset = log( totalUMI[w>0] ) )
+        if( leave_one_out ) {# for leave-1-out crossvalidation
+          data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
+          fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit) * data_at_i ) )
+        }else{ # if we are not doing crossvalidation:
+          fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
+        }
+        # if fit runs without error/warning, extract results:
+        data.frame(
+         smoothed  = fit_at_i,
+         status    = "ok",
+         sum_resid = sum( (umis[w>0] - fitted.values(fit))^2 ), # do I have to weight these?
+         sum_coef  = sum( abs(coef(fit)) ),
+         row.names=NULL)
+        
+       },
+       error = function(e) {
+         # print(paste0("error: ", i))
+         return(data.frame(
+         smoothed  = weighted_mean * totalUMI[i],
+         status    = "error",
+         sum_resid = NA,
+         sum_coef  = NA,#sum( abs(coef(fit)) )        
+         row.names = NULL
+         ))
+          },
+       warning= function(warn) {
+         # print(paste0("warning: ", i))
+         return(data.frame(
+         smoothed  = weighted_mean * totalUMI[i],
+         status    = "warning",
+         sum_resid = NA,
+         sum_coef  = NA, #sum( abs(coef(fit)) )
+         row.names = NULL
+         ))
+         }
+       
+     ) 
+    
+    data.frame(
+         umis = umis[i],
+         fit_results,
+         weighted_mean = weighted_mean,
+         neighbors = sum(w>0),
+         nonzero_neighbors = sum(umis[w>0] != 0),
+         stringsAsFactors = F )
+    
+  } ) )
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Carter data from SDS ----------------------------------------------------
+
+x <- readRDS("~/sds/sd17l002/p/smooth_carter/processed/E13A_Cerebella_exon_output.rds")
+
+
+
+
+# Top2a smoothing produces some unplausible counts:
+gene <- "Top2a"
+gene_locfit <- locfit.raw( x = do.call(lp, c(as.list(as.data.frame(x$PCA_embeddings[, 1:15])),
+                                             nn = .1,
+                                             deg=1)),
+                           y = x$raw_umis[gene, ],
+                           family = "poisson",
+                           link = "log",
+                           maxit = 50,
+                           base = log(colSums(x$raw_umis)), # take totalUMIs into account
+                           ev = dat() # no extrapolation between cells
+)
+range( fitted.values(gene_locfit) )
+# Smoothing with locfit package results in unplausible smoothed UMI values
+# for a few outlier cells (about two dozen, thousands of UMIs).
+
+
+
+
+# manloc_smooth without CV returns values between 0 and ~20, because unplausible
+# values (> 1000 UMIs) are produced by non-converging glm fits, which
+# manloc_smooth replaces with the tricube-weighted mean:
+manfit <- manloc_smooth(x$raw_umis["Top2a", ],
+                        colSums(x$raw_umis),
+                        x$PCA_embeddings,
+                        nn = 50)
+range(manfit$smoothed)
+
+# using leave-one-out crossvalidation, we observe a very large number of extreme outliers
+# again:
+manfit_LOO <- manloc_smooth(x$raw_umis["Top2a", ],
+                        colSums(x$raw_umis),
+                        x$PCA_embeddings,
+                        leave_one_out = TRUE,
+                        nn = 50)
+range(manfit_LOO$smoothed)
+table(manfit_LOO$smoothed > 1000)
+
+
