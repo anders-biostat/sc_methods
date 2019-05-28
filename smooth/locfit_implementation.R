@@ -47,7 +47,19 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
     
     weighted_mean =  sum(umis*w/totalUMI) / sum(w) 
     
-    fit_results <- tryCatch(
+    
+    # when all y are 0, statmod::glmnb.fit explicitly returns 0 for all coefficients
+    # which creates a bug in combination with an offset, so we handle it here explicitly:
+    # [ specifically, fitted value=exp(log(s) + sum( coef(fit) * data)) would give s, not 0. ]
+    if( max(umis[w>0]) == 0 ) {
+      fit_results <- data.frame(
+         smoothed  = 0,
+         status    = "ok",
+         sum_resid = 0,
+         sum_coef  = NA,
+         row.names=NULL)
+    } else{
+     fit_results <- tryCatch(
        {
         fit <- statmod::glmnb.fit(
           X = model.matrix(~featureMatrix[w>0,]),
@@ -61,7 +73,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
         }else{ # if we are not doing crossvalidation:
           fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
         }
-        # if fit runs without error/warning, extract results:
+        # if fit runs _without_ error/warning, extract results:
         data.frame(
          smoothed  = fit_at_i,
          status    = "ok",
@@ -91,8 +103,10 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          ))
          }
        
-     ) 
+     )  # end of tryCatch
+    }   # end of else
     
+    # return value of cell i:
     data.frame(
          umis = umis[i],
          fit_results,
@@ -127,7 +141,8 @@ x <- readRDS("~/sds/sd17l002/p/smooth_carter/processed/E13A_Cerebella_exon_outpu
 
 
 
-# Top2a smoothing produces some unplausible counts:
+# Whenever locfit 'does not converge' (warning message "procv: parameters out of bounds"),
+# it returns the totalUMIs (base aka offset) as fitted values:
 gene <- "Top2a"
 gene_locfit <- locfit.raw( x = do.call(lp, c(as.list(as.data.frame(x$PCA_embeddings[, 1:15])),
                                              nn = .1,
@@ -139,9 +154,12 @@ gene_locfit <- locfit.raw( x = do.call(lp, c(as.list(as.data.frame(x$PCA_embeddi
                            base = log(colSums(x$raw_umis)), # take totalUMIs into account
                            ev = dat() # no extrapolation between cells
 )
-range( fitted.values(gene_locfit) )
-# Smoothing with locfit package results in unplausible smoothed UMI values
-# for a few outlier cells (about two dozen, thousands of UMIs).
+
+# outlier values (thousands of UMIs, specifically: the cell's totalUMIs):
+range(fitted.values(gene_locfit))
+all.equal(unname(colSums(x$raw_umis)[fitted.values(gene_locfit) > 100]),
+          fitted.values(gene_locfit)[fitted.values(gene_locfit) > 100])
+
 
 
 
@@ -157,11 +175,12 @@ range(manfit$smoothed)
 
 # using leave-one-out crossvalidation, we observe a very large number of extreme outliers
 # again:
-manfit_LOO <- manloc_smooth(x$raw_umis["Top2a", ],
-                        colSums(x$raw_umis),
-                        x$PCA_embeddings,
-                        leave_one_out = TRUE,
-                        nn = 50)
+manfit_LOO <- manloc_smooth(
+           umis = x$raw_umis["Top2a", ],
+       totalUMI = colSums(x$raw_umis),
+  featureMatrix = x$PCA_embeddings,
+  leave_one_out = TRUE,
+             nn = 50)
 range(manfit_LOO$smoothed)
 table(manfit_LOO$smoothed > 1000)
 
