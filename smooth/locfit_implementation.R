@@ -125,7 +125,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          status          = "ok",
          intercept       = betas[1],
          coef_squaredSum = sum(betas[-1]^2),
-         coef_max        = max(abs(betas[-1])),
+         coef_max        = max(betas[-1][which.max(abs(betas[-1]))]),
          row.names=NULL)
         
        },
