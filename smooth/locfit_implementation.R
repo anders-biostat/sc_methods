@@ -68,6 +68,8 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
       fit_results <- data.frame(
          smoothed  = 0,
          status    = "ok",
+         intercept       = NA,
+         coef_squaredSum = NA,                
          row.names=NULL)
     } else{
      fit_results <- tryCatch(
@@ -108,10 +110,20 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
         # convert from matrix to numeric:
         fit_at_i <- c(fit_at_i)
         
+        # get coefficients:
+        betas <- as.numeric(predict.glmnet(
+          object    = fit,
+          newx      = matrix(featureMatrix[i,], nrow=1),
+          s         = lambda_use,
+          newoffset = log(totalUMI[i]),
+          type      = "coef") )
+        
         # if fit runs _without_ error/warning, extract results:
         data.frame(
-         smoothed  = fit_at_i,
-         status    = "ok",
+         smoothed        = fit_at_i,
+         status          = "ok",
+         intercept       = betas[1],
+         coef_squaredSum = sum(betas[-1]^2),
          row.names=NULL)
         
        },
@@ -120,6 +132,8 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          return(data.frame(
          smoothed  = weighted_mean * totalUMI[i],
          status    = "error",
+         intercept       = NA,
+         coef_squaredSum = NA,        
          row.names = NULL
          ))
           },
@@ -128,6 +142,8 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          return(data.frame(
          smoothed  = weighted_mean * totalUMI[i],
          status    = "warning",
+         intercept       = NA,
+         coef_squaredSum = NA,        
          row.names = NULL
          ))
          }
