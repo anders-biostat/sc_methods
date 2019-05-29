@@ -212,6 +212,32 @@ range(l.3$smoothed)
 table(l.3$smoothed > 1000)
 plot(l.3$umis, l.3$smoothed, asp=1); abline(0,1)
 
+l.200 <- manloc_smooth(
+  umis = x$raw_umis["Top2a", ],
+  totalUMI = colSums(x$raw_umis),
+  featureMatrix = x$PCA_embeddings,
+  leave_one_out = TRUE,
+  nn = 50,
+  h = NULL,
+  lambda_use = 10^2.3)
+range(l.200$smoothed)
+plot(l.200$umis, l.200$smoothed, asp=1); abline(0,1)
 
+
+
+
+
+
+dev <- function(counts, lambdas){
+ gives_inf <- lambdas == 0 & counts != 0
+ if(sum(gives_inf)>0) {
+ counts <- counts[!gives_inf]; lambdas <- lambdas[!gives_inf]
+ cat(paste0("Removed observations: ", sum(gives_inf), "\n") ) 
+ cat( "(These would otherwise give -Inf as they have nonzero count but lambda==0)\n")
+ }
+ -2 * ( dpois(counts, lambdas, log=T) - dpois(counts, counts, log=T)) 
+}
+
+sum(dev(l.200$umis, l.200$smoothed))
 
 
