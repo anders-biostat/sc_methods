@@ -87,19 +87,18 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
         )
         if( leave_one_out ) {# for leave-1-out crossvalidation
          
-          exp( predict.glmnet(fit, newx= matrix(featureMatrix[i,], nrow=1),
+          fit_at_i <- exp( predict.glmnet(fit, newx= matrix(featureMatrix[i,], nrow=1),
                             s = lambda_use,
                          newoffset = log(totalUMI[i]),
                          type = "link") )
-          # let's do it by hand as well:
+          # convert from matrix to numeric:
+          fit_at_i <- c(fit_at_i)
+          # if we wanted to predict by hand, this is how we'd do it:
           # data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
           # fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit)[, 10] * data_at_i ) )
         }else{ # if we are not doing crossvalidation:
           fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
         }       
-        
-
-        
         
         # if fit runs _without_ error/warning, extract results:
         data.frame(
