@@ -27,7 +27,17 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
   # totalUMIs: totalUMIs of each cell (the colSums of gene-by-cell countmatrix)
   # featureMatrix: cells in rows, features in cols - typically first n PCs
   # nn: number of nearest neighbors (integer)
+  
+  
+  # penalized regression is only meaningful on scaled dependent variable (very few exceptions).
+  # glmnet does it by default but we opt to do it manually here, because 
+  # coef(fit) will then return betas on the (interpretrable) scale where the
+  # penalty was applied rather than reverse-standardizing them to fit the
+  # dependent variable's original scale.
+  # In any case, the distances 'ds' are computed on the _un_scaled features, as
+  # high-variance features should count more for our application:
   ds <- as.matrix(dist( featureMatrix ))
+  featureMatrix <- scale(featureMatrix)
   
   lambda_seq <- 10^(seq( log10(.001), log10(200), by = .1))
 
@@ -77,13 +87,14 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
         # }
          
         fit <- glmnet::glmnet(
-          x = featureMatrix[w>0, ],
-          y = umis[w>0],
-          family = "poisson",
-          weights = w[w>0],
-          offset = log( totalUMI[w>0] ),
-          lambda = lambda_seq,
-          alpha = 0 # ridge regression
+                    x = featureMatrix[w>0, ],
+                    y = umis[w>0],
+               family = "poisson",
+              weights = w[w>0],
+               offset = log( totalUMI[w>0] ),
+               lambda = lambda_seq,
+                alpha = 0, # ridge regression
+          standardize = FALSE  # featureMatrix was scaled already above
         )
         # glmnet returns linear predictor irrespective of whether type is "link"
         # or "response", so we have to exponentiate it to obtain the mean:
