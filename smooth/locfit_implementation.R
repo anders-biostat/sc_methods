@@ -20,13 +20,16 @@ tricube <- function(x, halfwidth=1) {
 
 
 manloc_smooth <- function(umis, totalUMI, featureMatrix, 
-                          nn=NULL, h=NULL, leave_one_out=FALSE){ 
+                          nn=NULL, h=NULL, leave_one_out=FALSE,
+                          lambda_use = .3){ 
   # umis: raw umis for gene of interest. This should be an integer vector with 1
   #       element for each cell.
   # totalUMIs: totalUMIs of each cell (the colSums of gene-by-cell countmatrix)
   # featureMatrix: cells in rows, features in cols - typically first n PCs
   # nn: number of nearest neighbors (integer)
   ds <- as.matrix(dist( featureMatrix ))
+  
+  lambda_seq <- round(exp(seq( log10(.001), log10(200), by = .1)), 2)
 
   fit_statmod <- do.call(rbind, lapply(1:length(umis), function(i){ 
     pos_distances <- ds[i, ]
@@ -59,18 +62,45 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
     } else{
      fit_results <- tryCatch(
        {
-        fit <- statmod::glmnb.fit(
-          X = model.matrix(~featureMatrix[w>0,]),
+        # fit <- statmod::glmnb.fit(
+        #   X = model.matrix(~featureMatrix[w>0,]),
+        #   y = umis[w>0],
+        #   dispersion = 0, # poisson regression
+        #   weights = w[w>0],
+        #   offset = log( totalUMI[w>0] ) )
+        # 
+        # if( leave_one_out ) {# for leave-1-out crossvalidation
+        #   data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
+        #   fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit) * data_at_i ) )
+        # }else{ # if we are not doing crossvalidation:
+        #   fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
+        # }
+         
+        fit <- glmnet::glmnet(
+          x = featureMatrix[w>0, ],
           y = umis[w>0],
-          dispersion = 0, # poisson regression
+          family = "poisson",
           weights = w[w>0],
-          offset = log( totalUMI[w>0] ) )
+          offset = log( totalUMI[w>0] ),
+          lambda = lambda_seq,
+          alpha = 0 # ridge regression
+        )
         if( leave_one_out ) {# for leave-1-out crossvalidation
-          data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
-          fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit) * data_at_i ) )
+         
+          exp( predict.glmnet(fit, newx= matrix(featureMatrix[i,], nrow=1),
+                            s = lambda_use,
+                         newoffset = log(totalUMI[i]),
+                         type = "link") )
+          # let's do it by hand as well:
+          # data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
+          # fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit)[, 10] * data_at_i ) )
         }else{ # if we are not doing crossvalidation:
           fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
-        }
+        }       
+        
+
+        
+        
         # if fit runs _without_ error/warning, extract results:
         data.frame(
          smoothed  = fit_at_i,
@@ -174,14 +204,15 @@ range(manfit$smoothed)
 # again:
 
 # lambda is .3
-manfit_LOO <- manloc_smooth(
+l.3 <- manloc_smooth(
            umis = x$raw_umis["Top2a", ],
        totalUMI = colSums(x$raw_umis),
   featureMatrix = x$PCA_embeddings,
   leave_one_out = TRUE,
              nn = 50,
-              h = NULL)
-range(manfit_LOO$smoothed)
-table(manfit_LOO$smoothed > 1000)
+              h = NULL,
+  lambda_use = .3)
+range(l.3$smoothed)
+table(l.3$smoothed > 1000)
 
 
