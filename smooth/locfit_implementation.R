@@ -69,7 +69,8 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          smoothed  = 0,
          status    = "ok",
          intercept       = NA,
-         coef_squaredSum = NA,                
+         coef_squaredSum = NA,
+         coef_max        = NA,
          row.names=NULL)
     } else{
      fit_results <- tryCatch(
@@ -124,6 +125,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          status          = "ok",
          intercept       = betas[1],
          coef_squaredSum = sum(betas[-1]^2),
+         coef_max        = max(abs(betas[-1])),
          row.names=NULL)
         
        },
@@ -134,6 +136,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          status    = "error",
          intercept       = NA,
          coef_squaredSum = NA,        
+         coef_max        = NA,
          row.names = NULL
          ))
           },
@@ -144,6 +147,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          status    = "warning",
          intercept       = NA,
          coef_squaredSum = NA,        
+         coef_max        = NA,
          row.names = NULL
          ))
          }
