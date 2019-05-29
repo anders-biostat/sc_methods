@@ -55,8 +55,6 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
       fit_results <- data.frame(
          smoothed  = 0,
          status    = "ok",
-         sum_resid = 0,
-         sum_coef  = NA,
          row.names=NULL)
     } else{
      fit_results <- tryCatch(
@@ -77,8 +75,6 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
         data.frame(
          smoothed  = fit_at_i,
          status    = "ok",
-         sum_resid = sum( (umis[w>0] - fitted.values(fit))^2 ), # do I have to weight these?
-         sum_coef  = sum( abs(coef(fit)) ),
          row.names=NULL)
         
        },
@@ -87,8 +83,6 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          return(data.frame(
          smoothed  = weighted_mean * totalUMI[i],
          status    = "error",
-         sum_resid = NA,
-         sum_coef  = NA,#sum( abs(coef(fit)) )        
          row.names = NULL
          ))
           },
@@ -97,8 +91,6 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          return(data.frame(
          smoothed  = weighted_mean * totalUMI[i],
          status    = "warning",
-         sum_resid = NA,
-         sum_coef  = NA, #sum( abs(coef(fit)) )
          row.names = NULL
          ))
          }
@@ -141,6 +133,11 @@ x <- readRDS("~/sds/sd17l002/p/smooth_carter/processed/E13A_Cerebella_exon_outpu
 
 
 
+
+# Top2a -------------------------------------------------------------------
+
+
+
 # Whenever locfit 'does not converge' (warning message "procv: parameters out of bounds"),
 # it returns the totalUMIs (base aka offset) as fitted values:
 gene <- "Top2a"
@@ -175,12 +172,15 @@ range(manfit$smoothed)
 
 # using leave-one-out crossvalidation, we observe a very large number of extreme outliers
 # again:
+
+# lambda is .3
 manfit_LOO <- manloc_smooth(
            umis = x$raw_umis["Top2a", ],
        totalUMI = colSums(x$raw_umis),
   featureMatrix = x$PCA_embeddings,
   leave_one_out = TRUE,
-             nn = 50)
+             nn = 50,
+              h = NULL)
 range(manfit_LOO$smoothed)
 table(manfit_LOO$smoothed > 1000)
 
