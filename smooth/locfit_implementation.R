@@ -5,6 +5,18 @@ library( Matrix )
 # Locfit by hand ----------------------------------------------------------
 
 
+dev <- function(counts, lambdas){
+ # computes poisson deviance of counts from lambdas. Returns NA if count !=0 and lambda == 0.
+ gives_inf <- lambdas == 0 & counts != 0
+ deviances <- -2 * ( dpois(counts, lambdas, log=T) - dpois(counts, counts, log=T)) 
+ if(sum(gives_inf)>0){
+ deviances[gives_inf] <- NA
+ cat(paste0("Replaced with NAs: ", sum(gives_inf), " expected infinite values (nonzero count but lambda==0).\n") ) 
+ }
+ return(deviances)
+}
+
+
 tricube <- function(x, halfwidth=1) {
   # tricube kernel function. All values outside c(-halfwidth, halfwidth) are 0,
   # integral is 1, variance is
@@ -259,15 +271,6 @@ plot(l.200$umis, l.200$smoothed, asp=1); abline(0,1)
 
 
 
-dev <- function(counts, lambdas){
- gives_inf <- lambdas == 0 & counts != 0
- if(sum(gives_inf)>0) {
- counts <- counts[!gives_inf]; lambdas <- lambdas[!gives_inf]
- cat(paste0("Removed observations: ", sum(gives_inf), "\n") ) 
- cat( "(These would otherwise give -Inf as they have nonzero count but lambda==0)\n")
- }
- -2 * ( dpois(counts, lambdas, log=T) - dpois(counts, counts, log=T)) 
-}
 
 sum(dev(l.200$umis, l.200$smoothed))
 
