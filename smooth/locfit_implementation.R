@@ -21,7 +21,7 @@ tricube <- function(x, halfwidth=1) {
 
 manloc_smooth <- function(umis, totalUMI, featureMatrix, 
                           nn=NULL, h=NULL, leave_one_out=FALSE,
-                          lambda_use = .3){ 
+                          lambda_use = 10^-.5){ 
   # umis: raw umis for gene of interest. This should be an integer vector with 1
   #       element for each cell.
   # totalUMIs: totalUMIs of each cell (the colSums of gene-by-cell countmatrix)
@@ -29,7 +29,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
   # nn: number of nearest neighbors (integer)
   ds <- as.matrix(dist( featureMatrix ))
   
-  lambda_seq <- round(exp(seq( log10(.001), log10(200), by = .1)), 2)
+  lambda_seq <- 10^(seq( log10(.001), log10(200), by = .1))
 
   fit_statmod <- do.call(rbind, lapply(1:length(umis), function(i){ 
     pos_distances <- ds[i, ]
@@ -211,8 +211,11 @@ l.3 <- manloc_smooth(
   leave_one_out = TRUE,
              nn = 50,
               h = NULL,
-  lambda_use = .3)
+  lambda_use = 10^-.5)
 range(l.3$smoothed)
 table(l.3$smoothed > 1000)
+plot(l.3$umis, l.3$smoothed, asp=1); abline(0,1)
+
+
 
 
