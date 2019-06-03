@@ -1,6 +1,5 @@
-library(statmod)
-library( locfit )
-library( Matrix )
+library(glmnet)
+library( Matrix ) # recommended (necessary for sparse matrices)
 
 # Locfit by hand ----------------------------------------------------------
 
@@ -53,7 +52,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
   
   lambda_seq <- 10^(seq( log10(.001), log10(200), by = .1))
 
-  fit_statmod <- do.call(rbind, lapply(1:length(umis), function(i){ 
+  fit_results <- do.call(rbind, lapply(1:length(umis), function(i){ 
     pos_distances <- ds[i, ]
    
    # compute weights for local regression - depending on how nn and/or h are set: 
@@ -73,9 +72,9 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
     weighted_mean =  sum(umis*w/totalUMI) / sum(w) 
     
     
-    # when all y are 0, statmod::glmnb.fit explicitly returns 0 for all coefficients
-    # which creates a bug in combination with an offset, so we handle it here explicitly:
-    # [ specifically, fitted value=exp(log(s) + sum( coef(fit) * data)) would give s, not 0. ]
+    # when all y are 0, we don't bother doing the fit and return 0 right away:
+    # (in fact, glmnet throws warning otherwise)
+    # cases (we reported it and by now it's fixed).
     if( max(umis[w>0]) == 0 ) {
       fit_results <- data.frame(
          smoothed  = 0,
@@ -88,20 +87,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
     } else{
      fit_results <- tryCatch(
        {
-        # fit <- statmod::glmnb.fit(
-        #   X = model.matrix(~featureMatrix[w>0,]),
-        #   y = umis[w>0],
-        #   dispersion = 0, # poisson regression
-        #   weights = w[w>0],
-        #   offset = log( totalUMI[w>0] ) )
-        # 
-        # if( leave_one_out ) {# for leave-1-out crossvalidation
-        #   data_at_i <- c(Intercept = 1, featureMatrix[i,]) 
-        #   fit_at_i <- exp( log(totalUMI[i]) + sum( coef(fit) * data_at_i ) )
-        # }else{ # if we are not doing crossvalidation:
-        #   fit_at_i <- fitted.values( fit )[ sum( (w>0)[1:i] ) ]
-        # }
-         
+        
         fit <- glmnet::glmnet(
                     x = featureMatrix[w>0, ],
                     y = umis[w>0],
