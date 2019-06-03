@@ -181,6 +181,44 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
 
 
 
+# Other smoothing functions-----------------------------------------------------
+
+topNN <- function(x, NN=20) { order(x)[1:NN] }
+
+knn_smooth <- function(umis, totalUMI, featureMatrix) {
+  # umis: raw umis for gene of interest. This should be a integer vector with 1
+  #       element for each cell.
+  # totalUMIs: the colSums of countmatrix
+  # featureMatrix: cells in rows, features in cols - typically first n PCs
+  
+  ds <- as.matrix(dist( featureMatrix )) # cell-cell distances
+  sapply(1:length(umis), function(i) {
+    ids_knn <- topNN(ds[i, ], NN=20)
+    mean(umis[ids_knn]/totalUMI[ids_knn]) })
+}
+
+
+
+# GAMs:
+gam_form <- as.formula(
+  paste0("gene ~ ",
+         paste(paste0("s(PC", 1:10, ")"), collapse = " + "))
+)
+
+
+
+gam_smooth <- function(umis, totalUMI, featureMatrix) {
+  # umis: raw umis for gene of interest. This should be a integer vector with 1
+  #       element for each cell.
+  # totalUMIs: the colSums of countmatrix
+  # featureMatrix: cells in rows, features in cols - typically first n PCs
+  fit <- gam(gam_form,
+             data = data.frame(gene = umis, featureMatrix, totalUMI = totalUMI),
+             offset = log( totalUMI ),
+             family = "poisson")
+  return( predict(fit, type = "response") )
+}
+# x <- gam_smooth(E13A$raw_umis["Hes5", ], E13A$totalUMI, E13A$PCA_embeddings)
 
 
 
