@@ -83,6 +83,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          intercept       = NA,
          coef_squaredSum = NA,
          coef_max        = NA,
+         partial_linPred = NA,
          row.names=NULL)
     } else{
      fit_results <- tryCatch(
@@ -138,6 +139,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          intercept       = betas[1],
          coef_squaredSum = sum(betas[-1]^2),
          coef_max        = max(betas[-1][which.max(abs(betas[-1]))]),
+         partial_linPred = sum(betas[-1] * featureMatrix[i,]),
          row.names=NULL)
         
        },
@@ -149,6 +151,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          intercept       = NA,
          coef_squaredSum = NA,        
          coef_max        = NA,
+         partial_linPred = NA,
          row.names = NULL
          ))
           },
@@ -160,6 +163,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
          intercept       = NA,
          coef_squaredSum = NA,        
          coef_max        = NA,
+         partial_linPred = NA,
          row.names = NULL
          ))
          }
@@ -242,6 +246,17 @@ range(manfit$smoothed)
 # using leave-one-out crossvalidation, we observe a very large number of extreme outliers
 # again:
 
+l.001 <- manloc_smooth(
+           umis = x$raw_umis["Top2a", ],
+       totalUMI = colSums(x$raw_umis),
+  featureMatrix = x$PCA_embeddings,
+  leave_one_out = TRUE,
+             nn = 50,
+              h = NULL,
+  lambda_use = 1e-3)
+range(l.001$smoothed)
+
+
 # lambda is .3
 l.3 <- manloc_smooth(
            umis = x$raw_umis["Top2a", ],
@@ -267,11 +282,154 @@ range(l.200$smoothed)
 plot(l.200$umis, l.200$smoothed, asp=1); abline(0,1)
 
 
+plot(l.3$smoothed, l.3$weighted_mean * totalUMI, col = 1 + (l.3$status == "ok"), asp=1);abline(0,1)
+plot(l.200$smoothed, l.200$weighted_mean * totalUMI, col = 1 + (l.200$status == "ok"), asp=1);abline(0,1)
+
+
+
+# Top2a, 50 nn ------------------------------------------------------------
+
+
+
+Top2a_50 <- lapply(10^(seq( log10(.001), log10(200), length.out = 9)),
+       function(theLambda) {
+         print(theLambda)
+         res_df <- manloc_smooth(
+           umis = x$raw_umis["Top2a", ],
+           totalUMI = colSums(x$raw_umis),
+           featureMatrix = x$PCA_embeddings,
+           leave_one_out = TRUE,
+           nn = 50,
+           h = NULL,
+           lambda_use = theLambda)
+         res_df <- data.frame(lambda=theLambda,
+                              res_df,
+                              totalUMI = Matrix::colSums(x$raw_umis),
+                              stringsAsFactors = F)
+       })
 
 
 
 
 
-sum(dev(l.200$umis, l.200$smoothed))
+# Top2a, 300 nn ------------------------------------------------------------
+
+
+
+Top2a_300 <- lapply(10^(seq( log10(.001), log10(200), length.out = 9)),
+       function(theLambda) {
+         print(theLambda)
+         res_df <- manloc_smooth(
+           umis = x$raw_umis["Top2a", ],
+           totalUMI = colSums(x$raw_umis),
+           featureMatrix = x$PCA_embeddings,
+           leave_one_out = TRUE,
+           nn = 300,
+           h = NULL,
+           lambda_use = theLambda)
+         res_df <- data.frame(lambda=theLambda,
+                              res_df,
+                              totalUMI = Matrix::colSums(x$raw_umis),
+                              stringsAsFactors = F)
+       })
+tmp <- do.call(rbind, ll2)
+
+tmp$lambda <- round(tmp$lambda, 3)
+tmp$adjusted <- tmp$smoothed
+tmp$adjusted[tmp$adjusted > 25] <- 25
+
+# smoothing vs original
+ggplot(tmp, aes(umis, adjusted))+geom_point()+geom_abline()+
+  coord_fixed() + facet_wrap(~lambda)
+
+# how much smoothing is different from weighted mean:
+ggplot(tmp, aes(weighted_mean * totalUMI, adjusted))+geom_point()+geom_abline()+
+  coord_fixed() + facet_wrap(~lambda)
+
+# totalDeviance:
+tmp %>% mutate( deviances = dev(umis, smoothed)) %>% group_by(lambda) %>% summarize(totalDeviance = sum(deviances, na.rm = T)) %>% ggplot(aes(lambda, totalDeviance))+geom_point() + scale_y_log10() + scale_x_log10()
+
+
+
+
+
+
+# Hes5, 50 nn ------------------------------------------------------------
+
+
+
+Hes5_50 <- lapply(10^(seq( log10(.001), log10(200), length.out = 9)),
+             function(theLambda) {
+               print(theLambda)
+               res_df <- manloc_smooth(
+                 umis = x$raw_umis["Hes5", ],
+                 totalUMI = colSums(x$raw_umis),
+                 featureMatrix = x$PCA_embeddings,
+                 leave_one_out = TRUE,
+                 nn = 50,
+                 h = NULL,
+                 lambda_use = theLambda)
+               res_df <- data.frame(lambda=theLambda,
+                                    res_df,
+                                    totalUMI = Matrix::colSums(x$raw_umis),
+                                    stringsAsFactors = F)
+             })
+
+
+
+# Hes5, 300 nn ------------------------------------------------------------
+
+
+
+Hes5_300 <- lapply(10^(seq( log10(.001), log10(200), length.out = 9)),
+             function(theLambda) {
+               print(theLambda)
+               res_df <- manloc_smooth(
+                 umis = x$raw_umis["Hes5", ],
+                 totalUMI = colSums(x$raw_umis),
+                 featureMatrix = x$PCA_embeddings,
+                 leave_one_out = TRUE,
+                 nn = 300,
+                 h = NULL,
+                 lambda_use = theLambda)
+               res_df <- data.frame(lambda=theLambda,
+                                    res_df,
+                                    totalUMI = Matrix::colSums(x$raw_umis),
+                                    stringsAsFactors = F)
+             })
+
+
+
+
+
+
+
+
+# Plots -------------------------------------------------------------------
+Hes5_50
+Hes5_300
+Top2a_50
+Top2a_300
+
+
+
+tmp <- do.call(rbind, Top2a_300)
+tmp$lambda <- round(tmp$lambda, 3)
+tmp$adjusted <- tmp$smoothed
+# tmp$adjusted[tmp$adjusted > 60] <- 60
+
+# smoothing vs original
+ggplot(tmp, aes(umis, adjusted))+geom_point()+geom_abline()+
+  coord_fixed() + facet_wrap(~lambda)
+
+# how much smoothing is different from weighted mean:
+ggplot(tmp, aes(weighted_mean * totalUMI, adjusted))+geom_point()+geom_abline()+
+  coord_fixed() + facet_wrap(~lambda)
+
+# totalDeviance:
+tmp %>% mutate( deviances = dev(umis, smoothed)) %>% group_by(lambda) %>%
+  summarize(totalDeviance = sum(deviances, na.rm = T)) %>%
+  ggplot(aes(lambda, totalDeviance))+geom_point() + scale_y_log10() + scale_x_log10()
+
 
 
