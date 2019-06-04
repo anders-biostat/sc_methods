@@ -61,7 +61,7 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
       f = function(root) { 
         # one_sd <- sqrt(35/243) * root
         sum( pos_distances < root) - nn},
-      interval = c(1e-5, 20))}
+      interval = c(1e-5, max(pos_distances)))}
     # weights for local regression:
     if(is.null(h)&!is.null(nn))  w <- tricube(pos_distances, halfwidth = hw_fit$root)
     if(!is.null(h)&is.null(nn))  w <- tricube(pos_distances, halfwidth = h)
