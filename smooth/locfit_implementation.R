@@ -173,7 +173,11 @@ manloc_smooth <- function(umis, totalUMI, featureMatrix,
 
 
 
-
+# working with smoothed values --------------------------------------------
+pos <- function(x, gamma, cutoff=NULL, ...){
+  hist((x)^gamma, 100, main = gamma, ...); abline(v=c(cutoff)) 
+  x^gamma > cutoff
+}
 
 
 
